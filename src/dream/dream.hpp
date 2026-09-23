@@ -43,6 +43,17 @@ public:
   // consolidate：把重叠度高的相邻记忆重写为单条（简化：dedup + 重排时间戳）
   int consolidate() { return dedup(0.5); }
 
+  // report：记忆库统计（对齐 Rust dream/report）
+  struct Report {
+    int total = 0;            // 总条数
+    int total_uses = 0;       // 累计使用次数
+    long newest_at = 0;       // 最近一条创建时间（epoch 秒）
+    long oldest_at = 0;       // 最旧一条创建时间
+    int stale = 0;            // last_used 超过 90 天且 use_count==0 的条数
+    double dedup_threshold = 0.0; // 参考去重阈值
+  };
+  Report report() const;
+
   // 命中：把某条记忆标记为刚使用
   void touch(const std::string& id);
 

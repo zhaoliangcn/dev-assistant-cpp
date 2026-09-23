@@ -105,6 +105,57 @@ static bool handle_slash(const std::string& line, App& app) {
     run_diff_cmd(line == "/diff" ? "" : line.substr(6));
     return false;
   }
+  // /budget：上下文预算面板（对齐 Rust /budget：用量、进度条、压力等级）
+  if (line == "/budget") {
+    auto r = app.budget_report();
+    const char* pressure = r.pressure == 3 ? "🔴 爆满"
+                           : r.pressure == 2 ? "🟠 临界"
+                           : r.pressure == 1 ? "🟡 提示"
+                                             : "🟢 正常";
+    int bar_n = (int)(r.utilization * 20);
+    if (bar_n < 0) bar_n = 0;
+    if (bar_n > 20) bar_n = 20;
+    std::string bar;
+    for (int i = 0; i < 20; i++) bar += i < bar_n ? "█" : "░";
+    std::printf("📊 上下文预算:\n");
+    std::printf("  系统: %ld tok\n", r.system_tokens);
+    std::printf("  历史: %ld tok\n", r.history_tokens);
+    std::printf("  工具: %ld tok\n", r.tool_schema_tokens);
+    std::printf("  合计: %ld / %ld tok（%.1f%%）\n", r.total_tokens,
+                r.max_tokens, r.utilization * 100);
+    std::printf("  [%s] %s\n", bar.c_str(), pressure);
+    std::printf("  剩余可用: %ld tok\n", r.estimated_room);
+    return false;
+  }
+  // /dream [--dry-run]：记忆整理（对齐 Rust /dream：dry_run 预览不落盘）
+  if (line == "/dream" || line.rfind("/dream ", 0) == 0) {
+    bool dry_run = line.find("--dry-run") != std::string::npos;
+    auto& dream = app.dream();
+    auto rep = dream.report();
+    std::printf("🧠 Dream 记忆整理%s开始...（当前 %d 条）\n",
+                dry_run ? "（预演模式）" : "", rep.total);
+    if (rep.total == 0) {
+      std::printf("ℹ️ 记忆库为空，无需整理\n");
+      return false;
+    }
+    int dedup_n = dream.dedup(dry_run ? 0.6 : 0.6);
+    int forget_n = dream.forget(90, 0);
+    if (dry_run) {
+      // 预演：把变更当作“预览”展示（dedup/forget 已改内存，不 save_all 落盘）
+      std::printf("  预览: 将去重合并 %d 条、遗忘 %d 条（--dry-run 不落盘）\n",
+                  dedup_n, forget_n);
+      std::printf("  实际执行请去掉 --dry-run\n");
+      // 重新加载以撤销内存变更
+      dream.load_all();
+    } else {
+      dream.save_all();
+      std::printf("✅ 整理完成: 去重合并 %d 条、遗忘 %d 条\n", dedup_n, forget_n);
+    }
+    auto after = dream.report();
+    std::printf("  记忆库: %d → %d 条（累计使用 %d 次）\n", rep.total,
+                after.total, after.total_uses);
+    return false;
+  }
   if (line == "/status") {
     auto& m = app.llm().config().current_model();
     std::printf("模型: %s\nAPI: %s\n", m.model.c_str(), m.api_url.c_str());
@@ -175,7 +226,8 @@ static bool handle_slash(const std::string& line, App& app) {
   }
   if (line == "/help") {
     std::printf("命令: /exit /quit /status /model [name] /skills /memory"
-                " /history /diff [路径] /grep|/search <正则>\n");
+                " /history /diff [路径] /grep|/search <正则> /budget"
+                " /dream [--dry-run]\n");
     return false;
   }
   std::printf("未知命令: %s（/help 查看命令）\n", line.c_str());

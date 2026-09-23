@@ -8,6 +8,7 @@
 #include <ctime>
 
 #include "agent/agent.hpp"
+#include "agent/compressor.hpp"
 #include "config/config.hpp"
 #include "persist/journal.hpp"
 #include "tools/file_tools.hpp"
@@ -79,6 +80,30 @@ int App::process_message(const std::string& input) {
     j.close();
   }
   return rc;
+}
+
+App::BudgetReport App::budget_report() const {
+  BudgetReport r;
+  r.max_tokens = max_tokens_;
+  // 历史估算（与 Compressor 同口径）
+  r.history_tokens = (long)Compressor::history_tokens(last_history_);
+  // 工具 schema 估算：序列化后按 token 估算
+  size_t schema_bytes = 0;
+  for (const auto& s : tools_.to_openai_schema())
+    schema_bytes += s.dump().size();
+  r.tool_schema_tokens = (long)(schema_bytes * 3 / 4);
+  r.total_tokens = r.system_tokens + r.history_tokens + r.tool_schema_tokens;
+  r.utilization = r.max_tokens > 0
+                      ? (double)r.total_tokens / (double)r.max_tokens
+                      : 0.0;
+  r.estimated_room = r.max_tokens - r.total_tokens;
+  if (r.estimated_room < 0) r.estimated_room = 0;
+  // 压力分级（对齐 Rust ContextPressure：正常/提示/临界/爆满）
+  r.pressure = r.utilization >= 1.0 ? 3
+               : r.utilization >= 0.85 ? 2
+               : r.utilization >= 0.70 ? 1
+                                       : 0;
+  return r;
 }
 
 void App::finish_session() {

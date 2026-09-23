@@ -24,7 +24,8 @@ void print_usage() {
       "\n选项:\n"
       "  --project <dir>   项目工作目录（默认当前目录；工具/配置/会话日志指向该目录）\n"
       "  --config <path>   模型配置文件（默认 <项目目录>/.dev-assistant-models.toml）\n"
-      "  --model <name>    启动即切换模型（按名称或模型 ID）\n");
+      "  --model <name>    启动即切换模型（按名称或模型 ID）\n"
+      "  --max-tokens <n>  上下文窗口预算（默认 262144；仅本地预算，不发给 LLM API）\n");
 }
 
 void cmd_init() {
@@ -61,6 +62,7 @@ int main(int argc, char** argv) {
   // 先扫描全部参数，提取 --project/--config/--model（支持 --x <v> 与 --x=v），
   // 其余参数原样保留到 rest，供模式分派
   std::string project, config_path, model_name;
+  long max_tokens = 0;
   std::vector<std::string> rest;
   for (int i = 1; i < argc; i++) {
     std::string a = argv[i];
@@ -72,14 +74,18 @@ int main(int argc, char** argv) {
       a = a.substr(0, eq);
       has_inline = true;
     }
-    if (a == "--project" || a == "--config" || a == "--model") {
+    if (a == "--project" || a == "--config" || a == "--model" ||
+        a == "--max-tokens") {
       std::string* out = a == "--project" ? &project
                         : a == "--config" ? &config_path
-                                          : &model_name;
+                        : a == "--model"  ? &model_name
+                                          : nullptr;
       if (has_inline) {
-        *out = inline_v;
+        if (!out) max_tokens = std::atol(inline_v.c_str());
+        else *out = inline_v;
       } else if (i + 1 < argc) {
-        *out = argv[++i];
+        if (!out) max_tokens = std::atol(argv[++i]);
+        else *out = argv[i];
       } else {
         std::fprintf(stderr, "%s 需要参数\n", a.c_str());
         return 2;
@@ -102,8 +108,9 @@ int main(int argc, char** argv) {
 
   da::App app;
 
-  // --model：init 完成后启动即切换；失败则明确报错退出
+  // --model/--max-tokens：init 完成后启动即生效；失败则明确报错退出
   auto apply_model = [&]() -> bool {
+    if (max_tokens > 0) app.set_max_tokens(max_tokens);
     if (model_name.empty()) return true;
     if (app.llm().switch_model(model_name)) return true;
     std::fprintf(stderr, "未找到模型: %s（可用 /model 查看模型列表）\n",

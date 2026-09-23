@@ -40,6 +40,23 @@ public:
   // 最近一轮对话历史（供 REPL /history 查看；对应 Rust history_messages）
   const std::vector<ChatMessage>& last_history() const { return last_history_; }
 
+  // ── 上下文预算（对应 Rust ContextBudget）──
+  void set_max_tokens(long v) { max_tokens_ = v > 0 ? v : 262144; }
+  long max_tokens() const { return max_tokens_; }
+
+  struct BudgetReport {
+    long system_tokens = 0;     // 系统提示词估算
+    long history_tokens = 0;    // 对话历史估算
+    long tool_schema_tokens = 0;// 工具 schema 估算
+    long total_tokens = 0;
+    long max_tokens = 0;
+    double utilization = 0.0;   // 0.0 ~ 1.0
+    long estimated_room = 0;
+    // 压力等级：0 正常 / 1 提示 / 2 临界 / 3 爆满
+    int pressure = 0;
+  };
+  BudgetReport budget_report() const;
+
   // --resume：从最近会话的 events.jsonl 重建对话历史（返回恢复消息数）
   int resume_last_session();
 
@@ -55,6 +72,7 @@ private:
   bool no_approval_ = false;
   std::string last_session_dir_;
   std::vector<ChatMessage> last_history_;
+  long max_tokens_ = 262144;  // 上下文预算（--max-tokens；不发 API）
 };
 
 }  // namespace da

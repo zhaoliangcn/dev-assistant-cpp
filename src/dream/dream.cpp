@@ -2,6 +2,7 @@
 
 #include <dirent.h>
 #include <sys/stat.h>
+#include <unistd.h>
 
 #include <algorithm>
 #include <cctype>
@@ -169,11 +170,42 @@ void DreamStore::touch(const std::string& id) {
 }
 
 bool DreamStore::save_all() {
-  // 清理目录内旧文件（简化：直接重写当前集合对应的文件；
-  // 已删除记忆的旧文件由 forget 后的目录同步负责——此处先全部重写）
+  // 目录同步：删除已不在集合中的旧文件，再重写当前集合
+  // （dedup/forget 从 memories_ 移除的条目，其磁盘文件须一并清理）
+  std::vector<std::string> live_ids;
+  live_ids.reserve(memories_.size());
+  for (const auto& m : memories_) live_ids.push_back(m.id);
+
+  DIR* d = ::opendir(dir_.c_str());
+  if (d) {
+    struct dirent* e;
+    while ((e = ::readdir(d)) != nullptr) {
+      std::string name = e->d_name;
+      if (name.size() < 3 || name.substr(name.size() - 3) != ".md") continue;
+      std::string id = name.substr(0, name.size() - 3);
+      bool live = false;
+      for (const auto& lid : live_ids)
+        if (lid == id) { live = true; break; }
+      if (!live) ::unlink(memory_path(dir_, id).c_str());
+    }
+    ::closedir(d);
+  }
   for (const auto& m : memories_)
     if (!write_memory(m)) return false;
   return true;
+}
+
+DreamStore::Report DreamStore::report() const {
+  Report r;
+  r.total = (int)memories_.size();
+  long now = now_sec();
+  for (const auto& m : memories_) {
+    r.total_uses += m.use_count;
+    if (m.created_at > r.newest_at) r.newest_at = m.created_at;
+    if (r.oldest_at == 0 || m.created_at < r.oldest_at) r.oldest_at = m.created_at;
+    if (m.last_used_at < now - 90L * 86400 && m.use_count == 0) r.stale++;
+  }
+  return r;
 }
 
 }  // namespace da
