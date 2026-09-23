@@ -3,18 +3,35 @@
 #include <thread>
 #include <chrono>
 
+#include "llm/provider/anthropic.hpp"
+#include "llm/provider/ollama.hpp"
 #include "llm/provider/openai.hpp"
 
 namespace da {
 
 LlmClient::LlmClient() : provider_(std::make_unique<OpenAiProvider>()) {}
 
-void LlmClient::set_config(const AppConfig& cfg) { config_ = cfg; }
+void LlmClient::set_config(const AppConfig& cfg) {
+  config_ = cfg;
+  // 按当前模型的 provider 字段选路（切模型时同步更新）：
+  // anthropic/claude → Anthropic；ollama → Ollama；其余（openai*/shangtang 等
+  // OpenAI 兼容服务）→ OpenAiProvider
+  const std::string& p = config_.current_model().provider;
+  if (p == "anthropic" || p == "claude")
+    provider_ = std::make_unique<AnthropicProvider>();
+  else if (p == "ollama")
+    provider_ = std::make_unique<OllamaProvider>();
+  else
+    provider_ = std::make_unique<OpenAiProvider>();
+}
 
 bool LlmClient::switch_model(const std::string& name) {
   for (size_t i = 0; i < config_.models.size(); i++) {
     if (config_.models[i].name == name || config_.models[i].model == name) {
       config_.current = (int)i;
+      // 重选 provider：不同模型可能属于不同 provider 家族
+      AppConfig tmp = config_;
+      set_config(tmp);
       return true;
     }
   }

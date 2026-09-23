@@ -20,6 +20,8 @@ set(DA_SOURCES
   src/llm/http.cpp
   src/llm/tls.cpp
   src/llm/provider/openai.cpp
+  src/llm/provider/anthropic.cpp
+  src/llm/provider/ollama.cpp
   src/tools/registry.cpp
   src/tools/file_tools.cpp
   src/tools/system_tools.cpp
@@ -78,6 +80,8 @@ add_executable(da_tests
   src/utils/frontmatter.cpp
   src/utils/gitignore.cpp
   src/llm/provider/openai.cpp
+  src/llm/provider/anthropic.cpp
+  src/llm/provider/ollama.cpp
   src/llm/http.cpp
   src/llm/tls.cpp
   src/tools/registry.cpp

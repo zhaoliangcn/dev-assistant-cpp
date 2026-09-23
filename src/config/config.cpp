@@ -85,6 +85,7 @@ bool AppConfig::load(const std::string& path) {
   m0.api_key = get_str("api_key");
   m0.model = get_str("model");
   m0.name = m0.model;
+  m0.provider = get_str("provider");
   if (!m0.model.empty()) models.push_back(m0);
 
   for (auto& kv : tables) {
@@ -100,6 +101,7 @@ bool AppConfig::load(const std::string& path) {
     m.api_url = gs("api_url");
     m.api_key = gs("api_key");
     m.model = gs("model");
+    m.provider = gs("provider");
     if (!m.model.empty()) models.push_back(m);
   }
 
@@ -134,6 +136,7 @@ bool AppConfig::load(const std::string& path) {
       m.api_key = gs("api_key");
       m.model = gs("model");
       m.name = gs("name");
+      m.provider = gs("provider");
       if (m.name.empty()) m.name = m.model;
       if (!m.model.empty()) models.push_back(m);
     }

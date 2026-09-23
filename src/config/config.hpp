@@ -9,6 +9,7 @@ namespace da {
 
 struct ModelConfig {
   std::string name;      // 显示名
+  std::string provider;  // provider 类型：openai-compatible / anthropic / ollama 等
   std::string api_url;   // 完整 chat completions URL
   std::string api_key;   // ${VAR} 已展开
   std::string model;     // 模型 ID
