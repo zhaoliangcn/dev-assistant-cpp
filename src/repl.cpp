@@ -13,8 +13,48 @@ static bool handle_slash(const std::string& line, App& app) {
     std::printf("模型: %s\nAPI: %s\n", m.model.c_str(), m.api_url.c_str());
     return false;
   }
-  if (line.rfind("/model ", 0) == 0) {
-    app.llm().switch_model(line.substr(7));
+  // /model：对齐 Rust 版 — 无参数列出全部模型并按编号切换；带参数按名称切换
+  if (line == "/model" || line.rfind("/model ", 0) == 0) {
+    const auto& cfg = app.llm().config();
+    if (cfg.models.empty()) {
+      std::printf("ℹ️ 当前没有可用的模型配置\n");
+      return false;
+    }
+    if (line == "/model") {
+      std::printf("📦 可用模型（当前: %s）:\n", cfg.current_model().name.c_str());
+      for (size_t i = 0; i < cfg.models.size(); i++)
+        std::printf("  %zu. %s %s\n", i + 1,
+                    i == (size_t)cfg.current ? "👉" : "  ",
+                    cfg.models[i].name.c_str());
+      std::fputs("  输入编号切换（直接回车取消）: ", stdout);
+      std::fflush(stdout);
+      std::string choice;
+      if (!std::getline(std::cin, choice) || choice.empty()) {  // EOF 或空回车
+        std::printf("ℹ️ 已取消切换\n");
+        return false;
+      }
+      int idx = -1;
+      try {
+        size_t pos = 0;
+        idx = std::stoi(choice, &pos);
+        if (pos != choice.size()) idx = -1;  // 非纯数字
+      } catch (...) {
+        idx = -1;
+      }
+      if (idx < 1 || (size_t)idx > cfg.models.size()) {
+        std::printf("❌ 无效编号: %s\n", choice.c_str());
+        return false;
+      }
+      const std::string& target = cfg.models[idx - 1].name;
+      std::printf(app.llm().switch_model(target) ? "✅ 已切换到模型: %s\n"
+                                                 : "❌ 切换失败: %s\n",
+                  target.c_str());
+      return false;
+    }
+    std::string target = line.substr(7);
+    std::printf(app.llm().switch_model(target) ? "✅ 已切换到模型: %s\n"
+                                               : "❌ 未找到模型: %s（/model 查看模型列表）\n",
+                target.c_str());
     return false;
   }
   if (line == "/skills") {
@@ -37,7 +77,7 @@ static bool handle_slash(const std::string& line, App& app) {
     return false;
   }
   if (line == "/help") {
-    std::printf("命令: /exit /quit /status /model <name> /skills /memory\n");
+    std::printf("命令: /exit /quit /status /model [name] /skills /memory\n");
     return false;
   }
   std::printf("未知命令: %s（/help 查看命令）\n", line.c_str());

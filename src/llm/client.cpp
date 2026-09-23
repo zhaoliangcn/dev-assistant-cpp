@@ -11,13 +11,14 @@ LlmClient::LlmClient() : provider_(std::make_unique<OpenAiProvider>()) {}
 
 void LlmClient::set_config(const AppConfig& cfg) { config_ = cfg; }
 
-void LlmClient::switch_model(const std::string& name) {
+bool LlmClient::switch_model(const std::string& name) {
   for (size_t i = 0; i < config_.models.size(); i++) {
     if (config_.models[i].name == name || config_.models[i].model == name) {
       config_.current = (int)i;
-      return;
+      return true;
     }
   }
+  return false;
 }
 
 LlmResponse LlmClient::chat(const ChatRequest& req, const DeltaCallback& on_delta) {
