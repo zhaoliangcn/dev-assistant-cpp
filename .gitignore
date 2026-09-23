@@ -1,0 +1,17 @@
+# ── 密钥与隐私 ──
+# 模型配置含真实 API 密钥，禁止入库
+.dev-assistant-models.toml
+.dev-assistant-session-*.log
+.dev-assistant-store/
+
+# ── 会话 / 运行时数据 ──
+.dev-assistant/
+
+# ── 构建产物 ──
+build/
+build-asan/
+build-musl/
+build*/
+
+# ── 系统文件 ──
+.DS_Store

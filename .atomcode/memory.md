@@ -1,0 +1,3 @@
+- zig cc 0.17-dev 在无 -O（debug 模式）下编译 C 代码会默认注入 UBSan（__ubsan_handle_*），交叉编译静态库必须显式加 -O2/-O3；且 zig 交叉编译时 curl 等 CMake 项目会经 pkg-config 混入宿主机库（/opt/local），需 PKG_CONFIG_LIBDIR 指向空目录。
+- dev-assistant-cpp 的 TOML 配置解析已支持 Rust 版 [[models]] 数组表（toml.cpp 解析为 models/models.N，config.cpp 按文件顺序入列），dev-assistant-rs 目录的 .dev-assistant-models.toml 可直接使用；C++ 版二进制从 cwd 加载该配置文件，-m 单次执行模式只落盘 user_message 事件。
+- dev-assistant-cpp 的 LLM 客户端（openai.cpp/http.cpp/registry.cpp）已具备：api_url 缺 /chat/completions 自动补全、reasoning_content 流式兜底（推理模型可见回复）、非 2xx 显式报错（http_error: HTTP <code> <响应体预览>）、工具 schema required 恒为数组（nlohmann 初始化列表空 {} 会序列化成 null 而非 []）。配置中 5 个远程模型（sensenova-6.8-flash-lite/glm-5.2/primary/agnes-2.5-flash/glm-4.7-flash）经管道 REPL 全部实测可回复。

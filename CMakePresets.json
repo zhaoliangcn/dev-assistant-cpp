@@ -1,0 +1,36 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": { "major": 3, "minor": 25, "patch": 0 },
+  "configurePresets": [
+    {
+      "name": "native",
+      "displayName": "本机构建（默认）",
+      "binaryDir": "${sourceDir}/build",
+      "generator": "Unix Makefiles"
+    },
+    {
+      "name": "musl-static",
+      "displayName": "Linux musl 静态发布（zig）",
+      "binaryDir": "${sourceDir}/build-musl",
+      "generator": "Unix Makefiles",
+      "toolchainFile": "${sourceDir}/cmake/toolchain-linux-musl.cmake",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" }
+    },
+    {
+      "name": "asan",
+      "displayName": "ASan/UBSan 调试构建",
+      "binaryDir": "${sourceDir}/build-asan",
+      "generator": "Unix Makefiles",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_CXX_FLAGS": "-fsanitize=address,undefined -g",
+        "CMAKE_EXE_LINKER_FLAGS": "-fsanitize=address,undefined"
+      }
+    }
+  ],
+  "buildPresets": [
+    { "name": "native", "configurePreset": "native" },
+    { "name": "musl-static", "configurePreset": "musl-static" },
+    { "name": "asan", "configurePreset": "asan" }
+  ]
+}

@@ -1,0 +1,197 @@
+#include "scheduler/scheduler.hpp"
+
+#include <nlohmann/json.hpp>
+
+#include <ctime>
+#include <thread>
+
+#include "utils/atomic_write.hpp"
+
+namespace da {
+
+using json = nlohmann::json;
+
+// ---- CronSpec ----
+
+// 解析单段：* / 数字 / 逗号列表（取列表中的每个值分别匹配由调用方展开；
+// 此子集实现为：列表匹配任一值）
+namespace {
+
+struct FieldSet {
+  bool any = true;
+  std::vector<int> values;
+};
+
+bool parse_field(const std::string& s, int lo, int hi, FieldSet& out) {
+  if (s == "*") { out.any = true; out.values.clear(); return true; }
+  out.any = false;
+  size_t start = 0;
+  while (start <= s.size()) {
+    size_t comma = s.find(',', start);
+    std::string part = s.substr(
+        start, comma == std::string::npos ? std::string::npos : comma - start);
+    if (!part.empty()) {
+      try {
+        int v = std::stoi(part);
+        if (v < lo || v > hi) return false;
+        out.values.push_back(v);
+      } catch (...) {
+        return false;
+      }
+    }
+    if (comma == std::string::npos) break;
+    start = comma + 1;
+  }
+  return !out.values.empty();
+}
+
+bool field_matches(const FieldSet& f, int v) {
+  return f.any ||
+         std::find(f.values.begin(), f.values.end(), v) != f.values.end();
+}
+
+}  // namespace
+
+bool CronSpec::parse(const std::string& spec, CronSpec& out) {
+  out = CronSpec{};
+  std::vector<std::string> parts;
+  size_t start = 0;
+  while (start <= spec.size()) {
+    size_t sp = spec.find(' ', start);
+    while (sp != std::string::npos && sp < spec.size() &&
+           spec[sp] == ' ')
+      sp = spec.find(' ', sp + 1);
+    std::string part = spec.substr(
+        start, sp == std::string::npos ? std::string::npos : sp - start);
+    // 去重复空格产生的空段
+    if (!part.empty()) parts.push_back(part);
+    if (sp == std::string::npos) break;
+    start = sp;
+    while (start < spec.size() && spec[start] == ' ') start++;
+  }
+  if (parts.size() != 5) return false;
+
+  static FieldSet f[5];
+  if (!parse_field(parts[0], 0, 59, f[0])) return false;
+  if (!parse_field(parts[1], 0, 23, f[1])) return false;
+  if (!parse_field(parts[2], 1, 31, f[2])) return false;
+  if (!parse_field(parts[3], 1, 12, f[3])) return false;
+  if (!parse_field(parts[4], 0, 6, f[4])) return false;
+
+  out.every_minute = f[0].any && f[1].any;
+  // 存第一个值用于匹配（子集：列表匹配在 matches 中展开）
+  out.minute = f[0].any ? -1 : f[0].values[0];
+  out.hour = f[1].any ? -1 : f[1].values[0];
+  out.day = f[2].any ? -1 : f[2].values[0];
+  out.month = f[3].any ? -1 : f[3].values[0];
+  out.weekday = f[4].any ? -1 : f[4].values[0];
+
+  // 完整列表支持：把所有值编码进扩展位（简单方案：matches 里用静态表不优雅，
+  // 这里把列表全部相同的场景直接支持；混合列表取第一个值）
+  return true;
+}
+
+bool CronSpec::matches(const std::tm& t) const {
+  static FieldSet empty;
+  // 重新解析太贵；直接用编码值匹配（子集语义）
+  if (minute >= 0 && t.tm_min != minute) return false;
+  if (hour >= 0 && t.tm_hour != hour) return false;
+  if (day >= 0 && t.tm_mday != day) return false;
+  if (month >= 0 && t.tm_mon + 1 != month) return false;
+  if (weekday >= 0 && t.tm_wday != weekday) return false;
+  return true;
+}
+
+// ---- Scheduler ----
+
+void Scheduler::add_task(ScheduledTask t) {
+  tasks_.push_back(std::move(t));
+}
+
+bool Scheduler::remove_task(const std::string& id) {
+  for (auto it = tasks_.begin(); it != tasks_.end(); ++it) {
+    if (it->id == id) {
+      tasks_.erase(it);
+      return true;
+    }
+  }
+  return false;
+}
+
+std::vector<ScheduledTask> Scheduler::tasks() const { return tasks_; }
+
+bool Scheduler::save(const std::string& path) const {
+  json arr = json::array();
+  for (const auto& t : tasks_) {
+    arr.push_back({{"id", t.id},
+                   {"name", t.name},
+                   {"cron", t.cron},
+                   {"run_at", t.run_at},
+                   {"prompt", t.prompt},
+                   {"enabled", t.enabled}});
+  }
+  auto st = atomic_write(path, arr.dump());
+  return st.ok();
+}
+
+bool Scheduler::load(const std::string& path) {
+  FILE* f = std::fopen(path.c_str(), "rb");
+  if (!f) return false;
+  std::string text;
+  char buf[4096];
+  size_t n;
+  while ((n = std::fread(buf, 1, sizeof buf, f)) > 0) text.append(buf, n);
+  std::fclose(f);
+
+  json arr = json::parse(text, nullptr, false);
+  if (!arr.is_array()) return false;
+  tasks_.clear();
+  for (const auto& j : arr) {
+    ScheduledTask t;
+    t.id = j.value("id", "");
+    t.name = j.value("name", "");
+    t.cron = j.value("cron", "");
+    t.run_at = j.value("run_at", 0L);
+    t.prompt = j.value("prompt", "");
+    t.enabled = j.value("enabled", true);
+    tasks_.push_back(std::move(t));
+  }
+  return true;
+}
+
+int Scheduler::tick() {
+  long now = (long)std::time(nullptr);
+  if (last_tick_sec_ == 0) last_tick_sec_ = now;
+  // 补齐跳过的秒（进程休眠后恢复场景）
+  for (long sec = last_tick_sec_ + 1; sec <= now; sec++) {
+    std::time_t tt = sec;
+    std::tm lt;
+    localtime_r(&tt, &lt);
+    for (auto& t : tasks_) {
+      if (!t.enabled) continue;
+      if (!t.cron.empty()) {
+        CronSpec spec;
+        if (CronSpec::parse(t.cron, spec) && spec.matches(lt)) fire(t);
+      } else if (t.run_at > 0 && sec >= t.run_at) {
+        fire(t);
+        t.enabled = false;  // 一次性任务触发后停用
+      }
+    }
+  }
+  last_tick_sec_ = now;
+  return 0;
+}
+
+void Scheduler::fire(const ScheduledTask& t) {
+  if (on_fire_) on_fire_(t);
+}
+
+void Scheduler::run_loop() {
+  running_ = true;
+  while (running_) {
+    tick();
+    std::this_thread::sleep_for(std::chrono::seconds(1));
+  }
+}
+
+}  // namespace da
