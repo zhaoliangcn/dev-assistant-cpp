@@ -66,8 +66,8 @@ static void test_schema_full_registry() {
     EXPECT(params.is_object());
     EXPECT(params["required"].is_array());
   }
-  // exec_command/list_dir/read_file/write_file/edit_file/glob/grep/spawn_subagent
-  EXPECT_EQ(n, 8);
+  // exec_command/list_dir/read_file/read_symbol/write_file/edit_file/glob/grep/spawn_subagent
+  EXPECT_EQ(n, 9);
 }
 
 int test_tools() {

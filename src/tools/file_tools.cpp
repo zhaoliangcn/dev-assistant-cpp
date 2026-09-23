@@ -76,6 +76,80 @@ ToolResult read_file_tool(const nlohmann::json& args, ToolContext& ctx) {
   return {true, content};
 }
 
+ToolResult read_symbol_tool(const nlohmann::json& args, ToolContext& ctx) {
+  std::string path = resolve_path(ctx, arg_str(args, "path"));
+  std::string symbol = arg_str(args, "symbol");
+  if (symbol.empty()) return {false, "symbol 不能为空"};
+  std::string reason;
+  if (!ctx.security->validate_path(path, PathCheck::ReadOnly, reason))
+    return {false, "路径被拒绝: " + reason};
+
+  std::ifstream f(path, std::ios::binary);
+  if (!f) return {false, "无法读取文件: " + path};
+  std::ostringstream ss;
+  ss << f.rdbuf();
+  std::string content = ss.str();
+
+  // 轻量符号定位（零依赖，对齐 Rust tree-sitter 版的语义：返回该符号定义起的
+  // 完整片段）。启发式：定义行 = 含符号名且带声明关键字；结束 = 顶层缩进回归。
+  std::vector<std::string> lines;
+  size_t pos = 0;
+  while (pos <= content.size()) {
+    size_t nl = content.find('\n', pos);
+    lines.push_back(content.substr(
+        pos, nl == std::string::npos ? std::string::npos : nl - pos));
+    if (nl == std::string::npos) break;
+    pos = nl + 1;
+  }
+
+  auto is_def_line = [&](const std::string& l) {
+    if (l.find(symbol) == std::string::npos) return false;
+    // C/C++/Java/JS/Go 系：函数或类型声明；Python：def/class
+    return l.find("def " + symbol) != std::string::npos ||
+           l.find("class " + symbol) != std::string::npos ||
+           l.find("struct " + symbol) != std::string::npos ||
+           l.find("enum " + symbol) != std::string::npos ||
+           l.find("interface " + symbol) != std::string::npos ||
+           l.find("func " + symbol) != std::string::npos ||
+           (l.find(symbol + "(") != std::string::npos &&
+            l.find(';') == std::string::npos);
+  };
+
+  for (size_t i = 0; i < lines.size(); i++) {
+    if (!is_def_line(lines[i])) continue;
+    // 确定起始缩进；块结束 = 出现一个缩进 ≤ 起始且非空的后继行（花括号或缩进语言均适用）
+    size_t indent = lines[i].find_first_not_of(" \t");
+    size_t depth = 0;
+    bool opened = lines[i].find('{') != std::string::npos;
+    size_t end = i;
+    for (size_t j = i + 1; j < lines.size(); j++) {
+      const std::string& l = lines[j];
+      bool blank = l.find_first_not_of(" \t\r") == std::string::npos;
+      if (opened) {
+        for (char c : l) {
+          if (c == '{') depth++;
+          else if (c == '}') depth--;
+        }
+        end = j;
+        if (opened && depth <= 0 && l.find('}') != std::string::npos) break;
+      } else {
+        // 缩进式（Python 等）：回到 ≤ 起始缩进的非空行即结束
+        if (!blank) {
+          size_t ind = l.find_first_not_of(" \t");
+          if (ind <= indent) { end = j - 1; break; }
+        }
+        end = j;
+      }
+    }
+    std::ostringstream out;
+    out << (i + 1) << "\t" << lines[i] << "\n";
+    for (size_t k = i + 1; k <= end && k < lines.size(); k++)
+      out << (k + 1) << "\t" << lines[k] << "\n";
+    return {true, out.str()};
+  }
+  return {false, "未找到符号: " + symbol};
+}
+
 ToolResult write_file_tool(const nlohmann::json& args, ToolContext& ctx) {
   std::string path = resolve_path(ctx, arg_str(args, "path"));
   std::string content = arg_str(args, "content");
@@ -253,6 +327,22 @@ void register_file_tools(ToolRegistry& reg) {
                     {"required", {"path"}}};
     t.path_check = PathCheck::ReadOnly;
     t.handler = read_file_tool;
+    reg.register_tool(std::move(t));
+  }
+  {
+    // read_symbol：符号级读取（对齐 Rust tree-sitter 版；C++ 零依赖轻量实现）
+    ToolDefinition t;
+    t.name = "read_symbol";
+    t.description =
+        "读取文件中某个符号（函数/类/结构体/def）的定义片段，带行号。"
+        "参数: path（文件路径）, symbol（符号名）";
+    t.parameters = {{"type", "object"},
+                    {"properties",
+                     {{"path", {{"type", "string"}}},
+                      {"symbol", {{"type", "string"}}}}},
+                    {"required", {"path", "symbol"}}};
+    t.path_check = PathCheck::ReadOnly;
+    t.handler = read_symbol_tool;
     reg.register_tool(std::move(t));
   }
   {

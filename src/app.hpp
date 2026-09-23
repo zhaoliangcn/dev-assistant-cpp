@@ -2,6 +2,7 @@
 // App 组装层（对应 Rust app.rs）：装配 Config / LlmClient / ToolRegistry /
 // SecurityPolicy / ApprovalManager / Skills / Dream / Hooks
 #include <string>
+#include <vector>
 
 #include "dream/dream.hpp"
 #include "hooks/hooks.hpp"
@@ -36,6 +37,9 @@ public:
   // 会话收尾：session_end 钩子 + 经验入记忆库
   void finish_session();
 
+  // 最近一轮对话历史（供 REPL /history 查看；对应 Rust history_messages）
+  const std::vector<ChatMessage>& last_history() const { return last_history_; }
+
   // --resume：从最近会话的 events.jsonl 重建对话历史（返回恢复消息数）
   int resume_last_session();
 
@@ -50,6 +54,7 @@ private:
   HookManager hooks_;
   bool no_approval_ = false;
   std::string last_session_dir_;
+  std::vector<ChatMessage> last_history_;
 };
 
 }  // namespace da

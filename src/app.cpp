@@ -70,6 +70,7 @@ int App::process_message(const std::string& input) {
   // 此处在会话级触发 before/after 由 Agent 内部完成，这里只管主循环）
   Agent agent(llm_, tools_, security_, approval_);
   int rc = agent.run(input, true);
+  last_history_ = agent.history();  // 供 REPL /history 查看
 
   // 对话事件落盘（JSONL 0600）
   Journal j;
