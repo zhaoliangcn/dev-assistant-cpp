@@ -8,7 +8,7 @@ if(NOT DEFINED ZIG_EXE)
   set(ZIG_EXE "$ENV{ZIG_EXE}")
 endif()
 if(NOT ZIG_EXE)
-  set(ZIG_EXE "/Users/macmima1234/zig-x86_64-macos-0.17.0-dev.304+9787df942/zig")
+  set(ZIG_EXE "zig")  # 从 PATH 查找
 endif()
 set(CMAKE_C_COMPILER "${ZIG_EXE}" "cc" "-target" "x86_64-linux-musl")
 # Makefile 生成器要求 ar/ranlib 为单命令路径 → 仓库内包装脚本

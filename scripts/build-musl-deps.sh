@@ -14,9 +14,10 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-ZIG_EXE="${ZIG_EXE:-/Users/macmima1234/zig-x86_64-macos-0.17.0-dev.304+9787df942/zig}"
-OPENSSL_SRC="${OPENSSL_SRC:-/Users/macmima1234/code/thirdparty/openssl_3}"
-CURL_SRC="${CURL_SRC:-/Users/macmima1234/code/thirdparty/curl-8.18.0}"
+ZIG_EXE="${ZIG_EXE:-$(command -v zig || true)}"
+: "${ZIG_EXE:?错误: 未找到 zig，请设置 ZIG_EXE 环境变量}"
+OPENSSL_SRC="${OPENSSL_SRC:-$SCRIPT_DIR/../third_party/openssl_3}"
+CURL_SRC="${CURL_SRC:-$SCRIPT_DIR/../third_party/curl-8.18.0}"
 INSTALL_PREFIX="${INSTALL_PREFIX:-/tmp}"
 
 OPENSSL_INSTALL="$INSTALL_PREFIX/openssl-musl-install"
