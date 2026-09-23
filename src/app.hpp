@@ -17,7 +17,9 @@ class Agent;
 
 class App {
 public:
-  bool init();  // 加载配置 + 注册工具 + 扫描技能/钩子 + 打开会话日志
+  // 加载配置 + 注册工具 + 扫描技能/钩子 + 打开会话日志；
+  // config_path 为空时用工作目录下的 .dev-assistant-models.toml（对应 --config）
+  bool init(const std::string& config_path = "");
   // 一次完整交互（REPL 或 -m 模式共用）；结束后触发 dream.ingest 与 session 钩子
   int process_message(const std::string& input);
 
@@ -38,7 +40,7 @@ public:
   int resume_last_session();
 
 private:
-  bool load_config();
+  bool load_config(const std::string& path);
   LlmClient llm_;
   ToolRegistry tools_;
   SecurityPolicy security_;

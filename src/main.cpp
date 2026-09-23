@@ -1,24 +1,33 @@
-// main.cpp：CLI 参数解析 / 运行模式分发（对应 Rust main.rs）
+// main.cpp：CLI 参数解析 / 运行模式分发（对应 Rust main.rs；
+// 支持 --project / --config / --model 长参数，对齐 Rust 版）
 #include <cstdio>
 #include <cstring>
 #include <string>
+#include <vector>
+#include <unistd.h>
 
 #include "app.hpp"
 #include "repl.hpp"
 #include "web/web.hpp"
 
-static void print_usage() {
+namespace {
+
+void print_usage() {
   std::printf(
       "dev-assistant-cpp — 代码库级 AI 编程助手（C++ 版）\n\n"
       "用法:\n"
-      "  dev-assistant                交互式 REPL\n"
-      "  dev-assistant -m <消息>      单次执行\n"
-      "  dev-assistant --web [--port N]  Web 模式（默认 127.0.0.1:8080）\n"
-      "  dev-assistant init           生成配置模板\n"
-      "  dev-assistant --help         本帮助\n");
+      "  dev-assistant [选项]                交互式 REPL\n"
+      "  dev-assistant [选项] -m <消息>      单次执行\n"
+      "  dev-assistant [选项] --web [--port N]  Web 模式（默认 127.0.0.1:8080）\n"
+      "  dev-assistant init                  生成配置模板\n"
+      "  dev-assistant --help                本帮助\n"
+      "\n选项:\n"
+      "  --project <dir>   项目工作目录（默认当前目录；工具/配置/会话日志指向该目录）\n"
+      "  --config <path>   模型配置文件（默认 <项目目录>/.dev-assistant-models.toml）\n"
+      "  --model <name>    启动即切换模型（按名称或模型 ID）\n");
 }
 
-static void cmd_init() {
+void cmd_init() {
   const char* tpl =
       "# dev-assistant 配置\n"
       "api_url = \"${API_URL:-https://api.deepseek.com/v1/chat/completions}\"\n"
@@ -35,47 +44,111 @@ static void cmd_init() {
   std::printf("已生成 .dev-assistant-models.toml，请设置 API_KEY 环境变量或编辑文件。\n");
 }
 
+// 基于启动目录把相对路径绝对化（对应 Rust to_restart_args 的 absolutize，
+// 避免 chdir 到 --project 后相对路径的解析基准改变）
+std::string absolutize(const std::string& p, const std::string& startup_cwd) {
+  if (p.empty() || p[0] == '/') return p;
+  return startup_cwd + "/" + p;
+}
+
+}  // namespace
+
 int main(int argc, char** argv) {
+  // 启动 cwd：--project / --config 相对路径的解析基准
+  char cwd_buf[4096];
+  std::string startup_cwd = ::getcwd(cwd_buf, sizeof cwd_buf) ? cwd_buf : ".";
+
+  // 先扫描全部参数，提取 --project/--config/--model（支持 --x <v> 与 --x=v），
+  // 其余参数原样保留到 rest，供模式分派
+  std::string project, config_path, model_name;
+  std::vector<std::string> rest;
+  for (int i = 1; i < argc; i++) {
+    std::string a = argv[i];
+    std::string inline_v;
+    bool has_inline = false;
+    size_t eq = a.find('=');
+    if (eq != std::string::npos && a.rfind("--", 0) == 0) {
+      inline_v = a.substr(eq + 1);
+      a = a.substr(0, eq);
+      has_inline = true;
+    }
+    if (a == "--project" || a == "--config" || a == "--model") {
+      std::string* out = a == "--project" ? &project
+                        : a == "--config" ? &config_path
+                                          : &model_name;
+      if (has_inline) {
+        *out = inline_v;
+      } else if (i + 1 < argc) {
+        *out = argv[++i];
+      } else {
+        std::fprintf(stderr, "%s 需要参数\n", a.c_str());
+        return 2;
+      }
+    } else {
+      rest.push_back(has_inline ? std::string(argv[i]) : a);
+    }
+  }
+
+  // --project：切换到目标项目目录（工具/配置/会话日志随之指向该目录）
+  if (!project.empty()) {
+    std::string target = absolutize(project, startup_cwd);
+    if (::chdir(target.c_str()) != 0) {
+      std::fprintf(stderr, "无法切换到项目目录: %s\n", target.c_str());
+      return 1;
+    }
+  }
+  // --config：相对路径基于启动 cwd 绝对化（chdir 之后基准已变）
+  if (!config_path.empty()) config_path = absolutize(config_path, startup_cwd);
+
   da::App app;
 
-  if (argc >= 2) {
-    if (std::strcmp(argv[1], "--help") == 0 || std::strcmp(argv[1], "-h") == 0) {
+  // --model：init 完成后启动即切换；失败则明确报错退出
+  auto apply_model = [&]() -> bool {
+    if (model_name.empty()) return true;
+    if (app.llm().switch_model(model_name)) return true;
+    std::fprintf(stderr, "未找到模型: %s（可用 /model 查看模型列表）\n",
+                 model_name.c_str());
+    return false;
+  };
+  auto init_fail = [](const std::string& cfg) {
+    std::fprintf(stderr, "未找到配置: %s（运行 `dev-assistant init` 生成）\n",
+                 cfg.empty() ? ".dev-assistant-models.toml" : cfg.c_str());
+    return 1;
+  };
+
+  if (!rest.empty()) {
+    const std::string& c0 = rest[0];
+    if (c0 == "--help" || c0 == "-h") {
       print_usage();
       return 0;
     }
-    if (std::strcmp(argv[1], "init") == 0) {
+    if (c0 == "init") {
       cmd_init();
       return 0;
     }
-    if (std::strcmp(argv[1], "--web") == 0) {
+    if (c0 == "--web") {
       int port = 8080;
-      if (argc >= 4 && std::strcmp(argv[2], "--port") == 0)
-        port = std::atoi(argv[3]);
-      if (!app.init()) {
-        std::fprintf(stderr, "未找到配置 .dev-assistant-models.toml（运行 `dev-assistant init` 生成）\n");
-        return 1;
-      }
+      if (rest.size() >= 3 && rest[1] == "--port")
+        port = std::atoi(rest[2].c_str());
+      if (!app.init(config_path)) return init_fail(config_path);
+      if (!apply_model()) return 1;
       return da::run_web(app, port);
     }
-    if (std::strcmp(argv[1], "-m") == 0) {
-      if (argc < 3) {
+    if (c0 == "-m") {
+      if (rest.size() < 2) {
         std::fprintf(stderr, "-m 需要消息参数\n");
         return 2;
       }
-      std::string msg = argv[2];
-      for (int i = 3; i < argc; i++) msg += " " + std::string(argv[i]);
-      if (!app.init()) {
-        std::fprintf(stderr, "未找到配置 .dev-assistant-models.toml（运行 `dev-assistant init` 生成）\n");
-        return 1;
-      }
+      std::string msg = rest[1];
+      for (size_t i = 2; i < rest.size(); i++) msg += " " + rest[i];
+      if (!app.init(config_path)) return init_fail(config_path);
+      if (!apply_model()) return 1;
       return app.process_message(msg);
     }
   }
 
   // REPL 模式
-  if (!app.init()) {
-    std::fprintf(stderr, "未找到配置 .dev-assistant-models.toml（运行 `dev-assistant init` 生成）\n");
-    return 1;
-  }
+  if (!app.init(config_path)) return init_fail(config_path);
+  if (!apply_model()) return 1;
   return da::run_repl(app);
 }

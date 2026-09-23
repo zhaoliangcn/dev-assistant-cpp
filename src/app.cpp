@@ -24,16 +24,16 @@ static std::string session_dir_today() {
   return std::string(".dev-assistant/sessions/") + buf;
 }
 
-bool App::load_config() {
+bool App::load_config(const std::string& path) {
   load_dotenv();
   AppConfig cfg;
-  if (!cfg.load(".dev-assistant-models.toml")) return false;
+  if (!cfg.load(path.empty() ? ".dev-assistant-models.toml" : path)) return false;
   llm_.set_config(cfg);
   return true;
 }
 
-bool App::init() {
-  if (!load_config()) return false;
+bool App::init(const std::string& config_path) {
+  if (!load_config(config_path)) return false;
   register_builtin_tools(tools_);
   register_subagent_tool(tools_, nullptr);  // runner 由 Agent 层特殊处理
   approval_ = ApprovalManager(no_approval_);
