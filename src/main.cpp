@@ -27,6 +27,7 @@ void print_usage() {
       "  --model <name>    启动即切换模型（按名称或模型 ID）\n"
       "  --max-tokens <n>  上下文窗口预算（默认 262144；仅本地预算，不发给 LLM API）\n"
       "  --no-hooks        禁用钩子（session-start 等钩子不执行）\n"
+      "  --no-approval     无审批模式（写类/执行类工具直接执行，不弹确认）\n"
       "  --hooks-dry-run   预览将执行的钩子（不实际执行）\n"
       "  --verbose         启用详细日志输出\n");
 }
@@ -67,6 +68,7 @@ int main(int argc, char** argv) {
   std::string project, config_path, model_name;
   long max_tokens = 0;
   bool no_hooks = false, hooks_dry_run = false, verbose = false;
+  bool no_approval = false;
   std::vector<std::string> rest;
   for (int i = 1; i < argc; i++) {
     std::string a = argv[i];
@@ -79,6 +81,7 @@ int main(int argc, char** argv) {
       has_inline = true;
     }
     if (a == "--no-hooks") { no_hooks = true; continue; }
+    if (a == "--no-approval") { no_approval = true; continue; }
     if (a == "--hooks-dry-run") { hooks_dry_run = true; continue; }
     if (a == "--verbose") { verbose = true; continue; }
     if (a == "--project" || a == "--config" || a == "--model" ||
@@ -114,6 +117,8 @@ int main(int argc, char** argv) {
   if (!config_path.empty()) config_path = absolutize(config_path, startup_cwd);
 
   da::App app;
+  // 无审批模式：须在 init() 前设置（init 内构造 ApprovalManager 时生效）
+  app.set_no_approval(no_approval);
 
   // --model/--max-tokens：init 完成后启动即生效；失败则明确报错退出
   auto apply_model = [&]() -> bool {
