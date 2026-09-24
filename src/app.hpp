@@ -1,12 +1,15 @@
 #pragma once
 // App 组装层（对应 Rust app.rs）：装配 Config / LlmClient / ToolRegistry /
 // SecurityPolicy / ApprovalManager / Skills / Dream / Hooks
+#include <memory>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "dream/dream.hpp"
 #include "hooks/hooks.hpp"
 #include "llm/client.hpp"
+#include "scheduler/scheduler.hpp"
 #include "security/approval.hpp"
 #include "security/policy.hpp"
 #include "skills/skills.hpp"
@@ -57,6 +60,21 @@ public:
   };
   BudgetReport budget_report() const;
 
+  // 定时任务（对应 Rust scheduler/）：懒加载持久化任务并启动调度线程；
+  // 到期任务由默认执行器执行（shell + JSONL 日志）
+  Scheduler& scheduler();
+
+  // /pipeline <任务>：六阶段流水线（设计→实现→审查→测试→修复→记录），
+  // 每阶段跑一个子代理；返回是否全部通过
+  bool run_pipeline(const std::string& objective);
+
+  // 调度线程收尾（REPL 退出时调用）
+  void stop_scheduler();
+
+  // --verbose：详细日志（LLM 请求/工具执行耗时等输出到 stderr）
+  void set_verbose(bool v) { verbose_ = v; }
+  bool verbose() const { return verbose_; }
+
   // --resume：从最近会话的 events.jsonl 重建对话历史（返回恢复消息数）
   int resume_last_session();
 
@@ -73,6 +91,10 @@ private:
   std::string last_session_dir_;
   std::vector<ChatMessage> last_history_;
   long max_tokens_ = 262144;  // 上下文预算（--max-tokens；不发 API）
+  std::unique_ptr<Scheduler> scheduler_;
+  std::thread scheduler_thread_;
+  bool scheduler_started_ = false;
+  bool verbose_ = false;
 };
 
 }  // namespace da

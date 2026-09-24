@@ -25,10 +25,27 @@ struct FieldSet {
 bool parse_field(const std::string& s, int lo, int hi, FieldSet& out) {
   if (s == "*") { out.any = true; out.values.clear(); return true; }
   out.any = false;
+  // 步进语法：*/n 或 a-b/n（子集支持 */n）
+  std::string body = s;
+  int step = 1;
+  size_t slash = s.find('/');
+  if (slash != std::string::npos) {
+    body = s.substr(0, slash);
+    try {
+      step = std::stoi(s.substr(slash + 1));
+    } catch (...) {
+      return false;
+    }
+    if (step <= 0) return false;
+  }
+  if (body == "*") {
+    for (int v = lo; v <= hi; v += step) out.values.push_back(v);
+    return !out.values.empty();
+  }
   size_t start = 0;
-  while (start <= s.size()) {
-    size_t comma = s.find(',', start);
-    std::string part = s.substr(
+  while (start <= body.size()) {
+    size_t comma = body.find(',', start);
+    std::string part = body.substr(
         start, comma == std::string::npos ? std::string::npos : comma - start);
     if (!part.empty()) {
       try {
@@ -58,9 +75,6 @@ bool CronSpec::parse(const std::string& spec, CronSpec& out) {
   size_t start = 0;
   while (start <= spec.size()) {
     size_t sp = spec.find(' ', start);
-    while (sp != std::string::npos && sp < spec.size() &&
-           spec[sp] == ' ')
-      sp = spec.find(' ', sp + 1);
     std::string part = spec.substr(
         start, sp == std::string::npos ? std::string::npos : sp - start);
     // 去重复空格产生的空段
@@ -184,6 +198,36 @@ int Scheduler::tick() {
 
 void Scheduler::fire(const ScheduledTask& t) {
   if (on_fire_) on_fire_(t);
+}
+
+void Scheduler::execute_shell(const ScheduledTask& t, const std::string& log_path) {
+  // 执行 shell 命令（零依赖 popen），捕获输出与退出码
+  std::string cmd = t.prompt + " 2>&1";
+  std::fflush(stdout);
+  FILE* p = ::popen(cmd.c_str(), "r");
+  std::string out;
+  int rc = -1;
+  if (p) {
+    char buf[4096];
+    size_t n;
+    while ((n = std::fread(buf, 1, sizeof buf, p)) > 0 && out.size() < 4096)
+      out.append(buf, n);
+    if (out.size() > 4096) out += "...(截断)";
+    rc = ::pclose(p);
+  }
+  // 执行日志（JSONL 追加）
+  json entry{{"ts", (long)std::time(nullptr)},
+             {"task_id", t.id},
+             {"name", t.name},
+             {"command", t.prompt},
+             {"exit", rc},
+             {"output", out}};
+  std::FILE* lf = std::fopen(log_path.c_str(), "a");
+  if (lf) {
+    std::fputs(entry.dump().c_str(), lf);
+    std::fputc('\n', lf);
+    std::fclose(lf);
+  }
 }
 
 void Scheduler::run_loop() {

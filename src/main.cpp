@@ -25,7 +25,10 @@ void print_usage() {
       "  --project <dir>   项目工作目录（默认当前目录；工具/配置/会话日志指向该目录）\n"
       "  --config <path>   模型配置文件（默认 <项目目录>/.dev-assistant-models.toml）\n"
       "  --model <name>    启动即切换模型（按名称或模型 ID）\n"
-      "  --max-tokens <n>  上下文窗口预算（默认 262144；仅本地预算，不发给 LLM API）\n");
+      "  --max-tokens <n>  上下文窗口预算（默认 262144；仅本地预算，不发给 LLM API）\n"
+      "  --no-hooks        禁用钩子（session-start 等钩子不执行）\n"
+      "  --hooks-dry-run   预览将执行的钩子（不实际执行）\n"
+      "  --verbose         启用详细日志输出\n");
 }
 
 void cmd_init() {
@@ -63,6 +66,7 @@ int main(int argc, char** argv) {
   // 其余参数原样保留到 rest，供模式分派
   std::string project, config_path, model_name;
   long max_tokens = 0;
+  bool no_hooks = false, hooks_dry_run = false, verbose = false;
   std::vector<std::string> rest;
   for (int i = 1; i < argc; i++) {
     std::string a = argv[i];
@@ -74,6 +78,9 @@ int main(int argc, char** argv) {
       a = a.substr(0, eq);
       has_inline = true;
     }
+    if (a == "--no-hooks") { no_hooks = true; continue; }
+    if (a == "--hooks-dry-run") { hooks_dry_run = true; continue; }
+    if (a == "--verbose") { verbose = true; continue; }
     if (a == "--project" || a == "--config" || a == "--model" ||
         a == "--max-tokens") {
       std::string* out = a == "--project" ? &project
@@ -111,6 +118,10 @@ int main(int argc, char** argv) {
   // --model/--max-tokens：init 完成后启动即生效；失败则明确报错退出
   auto apply_model = [&]() -> bool {
     if (max_tokens > 0) app.set_max_tokens(max_tokens);
+    // 钩子开关（对应 Rust hooks_enabled / dry_run）
+    app.hooks().set_enabled(!no_hooks);
+    app.hooks().set_dry_run(hooks_dry_run);
+    app.set_verbose(verbose);
     if (model_name.empty()) return true;
     if (app.llm().switch_model(model_name)) return true;
     std::fprintf(stderr, "未找到模型: %s（可用 /model 查看模型列表）\n",

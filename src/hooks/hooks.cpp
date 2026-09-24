@@ -94,9 +94,15 @@ void HookManager::add_hook(HookConfig h) { hooks_.push_back(std::move(h)); }
 
 bool HookManager::fire(HookEvent event, const std::string& payload,
                        std::string& output) const {
+  if (!enabled_) return true;  // --no-hooks：全部钩子不执行
   bool allowed = true;
   for (const auto& h : hooks_) {
     if (h.event != event) continue;
+    if (dry_run_) {  // --hooks-dry-run：只打印，不执行
+      output += std::string("[dry-run] ") + hook_event_name(event) + " <- " +
+                h.name + ": " + h.command + "\n";
+      continue;
+    }
     ExecOutcome r = run_shell(h.command, h.timeout_sec, payload);
     if (!r.output.empty()) {
       output += r.output;

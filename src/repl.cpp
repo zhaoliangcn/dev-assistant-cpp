@@ -2,10 +2,13 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <ctime>
 #include <iostream>
 #include <regex>
 #include <string>
 #include <vector>
+
+#include "scheduler/scheduler.hpp"
 
 namespace da {
 
@@ -156,6 +159,83 @@ static bool handle_slash(const std::string& line, App& app) {
                 after.total, after.total_uses);
     return false;
   }
+  // /schedule cron <表达式> agent <指令>：创建定时任务（对齐 Rust）
+  if (line.rfind("/schedule ", 0) == 0) {
+    std::string rest = line.substr(10);
+    if (rest.rfind("cron ", 0) != 0) {
+      std::printf("用法: /schedule cron <cron表达式> agent <指令>\n");
+      return false;
+    }
+    std::string rest2 = rest.substr(5);
+    size_t ag = rest2.find("agent ");
+    if (ag == std::string::npos) {
+      std::printf("用法: /schedule cron <cron表达式> agent <指令>\n");
+      return false;
+    }
+    std::string cron_expr = rest2.substr(0, ag);
+    while (!cron_expr.empty() && cron_expr.back() == ' ') cron_expr.pop_back();
+    std::string prompt = rest2.substr(ag + 6);
+    CronSpec spec;
+    if (cron_expr.empty() || prompt.empty() || !CronSpec::parse(cron_expr, spec)) {
+      std::printf("❌ 无效任务（cron 表达式或指令为空/不合法）\n");
+      return false;
+    }
+    ScheduledTask t;
+    t.id = "task-" + std::to_string(std::time(nullptr));
+    t.name = prompt.substr(0, prompt.find(' ') == std::string::npos
+                                   ? prompt.size()
+                                   : prompt.find(' '));
+    t.cron = cron_expr;
+    t.prompt = prompt;
+    auto& sch = app.scheduler();
+    sch.add_task(t);
+    sch.save(".dev-assistant/scheduled_tasks.jsonl");
+    std::printf("✅ 已创建定时任务 %s（cron: %s）\n", t.id.c_str(),
+                t.cron.c_str());
+    return false;
+  }
+  // /unschedule <任务ID>：取消定时任务
+  if (line.rfind("/unschedule ", 0) == 0) {
+    std::string id = line.substr(12);
+    auto& sch = app.scheduler();
+    if (sch.remove_task(id)) {
+      sch.save(".dev-assistant/scheduled_tasks.jsonl");
+      std::printf("✅ 已取消任务: %s\n", id.c_str());
+    } else {
+      std::printf("❌ 未找到任务: %s\n", id.c_str());
+    }
+    return false;
+  }
+  // /scheduled | /tasks：列出全部定时任务
+  if (line == "/scheduled" || line == "/tasks") {
+    auto ts = app.scheduler().tasks();
+    if (ts.empty()) {
+      std::printf("ℹ️ 暂无定时任务\n");
+      return false;
+    }
+    std::printf("⏰ 定时任务（共 %zu 个）:\n", ts.size());
+    for (const auto& t : ts) {
+      std::string when = t.cron.empty()
+                             ? "一次性 @" + std::to_string(t.run_at)
+                             : "cron " + t.cron;
+      std::printf("  %s [%s] %s — %s\n", t.id.c_str(),
+                  t.enabled ? "启用" : "停用", when.c_str(),
+                  t.prompt.c_str());
+    }
+    return false;
+  }
+  // /pipeline <任务>：六阶段流水线（对齐 Rust /pipeline）
+  if (line.rfind("/pipeline ", 0) == 0) {
+    std::string objective = line.substr(10);
+    if (objective.empty()) {
+      std::printf("用法: /pipeline <任务描述>\n");
+      return false;
+    }
+    std::printf("🚀 流水线开始（设计→实现→审查→测试→修复→记录）...\n");
+    bool ok = app.run_pipeline(objective);
+    std::printf("%s\n", ok ? "✅ 流水线全部通过" : "❌ 流水线存在未通过阶段");
+    return false;
+  }
   if (line == "/status") {
     auto& m = app.llm().config().current_model();
     std::printf("模型: %s\nAPI: %s\n", m.model.c_str(), m.api_url.c_str());
@@ -227,7 +307,8 @@ static bool handle_slash(const std::string& line, App& app) {
   if (line == "/help") {
     std::printf("命令: /exit /quit /status /model [name] /skills /memory"
                 " /history /diff [路径] /grep|/search <正则> /budget"
-                " /dream [--dry-run]\n");
+                " /dream [--dry-run] /schedule cron <expr> agent <cmd>"
+                " /unschedule <id> /scheduled\n");
     return false;
   }
   std::printf("未知命令: %s（/help 查看命令）\n", line.c_str());
@@ -249,6 +330,7 @@ int run_repl(App& app) {
     app.process_message(line);
   }
   app.finish_session();
+  app.stop_scheduler();
   return 0;
 }
 

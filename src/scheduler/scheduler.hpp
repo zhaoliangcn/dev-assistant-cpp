@@ -35,6 +35,10 @@ public:
 
   explicit Scheduler(FireCallback on_fire) : on_fire_(std::move(on_fire)) {}
 
+  // 默认执行器：把 prompt 作为 shell 命令执行（popen 捕获输出），
+  // 结果追加到 log_path（JSONL：id/name/exit/输出截断）。对应 Rust executor.rs。
+  static void execute_shell(const ScheduledTask& t, const std::string& log_path);
+
   void add_task(ScheduledTask t);
   bool remove_task(const std::string& id);
   std::vector<ScheduledTask> tasks() const;

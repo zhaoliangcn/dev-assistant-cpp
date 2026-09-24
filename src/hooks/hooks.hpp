@@ -36,6 +36,10 @@ public:
   void add_hook(HookConfig h);
   const std::vector<HookConfig>& hooks() const { return hooks_; }
 
+  // 开关（对齐 Rust --no-hooks / --hooks-dry-run）
+  void set_enabled(bool v) { enabled_ = v; }     // false = 全部钩子不执行
+  void set_dry_run(bool v) { dry_run_ = v; }     // true = 只打印将执行的钩子
+
   // 触发事件；payload 会以环境变量 DA_HOOK_PAYLOAD 传入
   // 返回：false 表示某 blocking 钩子否决（仅 BeforeToolCall 有意义）
   bool fire(HookEvent event, const std::string& payload,
@@ -46,6 +50,8 @@ public:
 
 private:
   std::vector<HookConfig> hooks_;
+  bool enabled_ = true;
+  bool dry_run_ = false;
 };
 
 }  // namespace da

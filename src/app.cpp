@@ -9,6 +9,7 @@
 
 #include "agent/agent.hpp"
 #include "agent/compressor.hpp"
+#include "agent/pipeline.hpp"
 #include "config/config.hpp"
 #include "persist/journal.hpp"
 #include "tools/file_tools.hpp"
@@ -69,6 +70,9 @@ bool App::init(const std::string& config_path) {
 int App::process_message(const std::string& input) {
   // before_tool_call 之类的事件在 Agent 工具执行处触发（简化：
   // 此处在会话级触发 before/after 由 Agent 内部完成，这里只管主循环）
+  if (verbose_)
+    std::fprintf(stderr, "[verbose] 模型=%s 输入=%zu 字符\n",
+                 llm_.config().current_model().model.c_str(), input.size());
   Agent agent(llm_, tools_, security_, approval_);
   int rc = agent.run(input, true);
   last_history_ = agent.history();  // 供 REPL /history 查看
@@ -118,6 +122,47 @@ void App::finish_session() {
                   {"session"});
     dream_.save_all();
   }
+}
+
+Scheduler& App::scheduler() {
+  if (!scheduler_) {
+    // 到期回调：默认执行器（shell + JSONL 日志，对应 Rust executor.rs）
+    std::string log_path = ".dev-assistant/scheduler.log";
+    scheduler_ = std::make_unique<Scheduler>(
+        [log_path](const ScheduledTask& t) {
+          Scheduler::execute_shell(t, log_path);
+        });
+    scheduler_->load(".dev-assistant/scheduled_tasks.jsonl");
+    if (!scheduler_started_) {
+      scheduler_started_ = true;
+      scheduler_thread_ = std::thread([this]() { scheduler_->run_loop(); });
+    }
+  }
+  return *scheduler_;
+}
+
+void App::stop_scheduler() {
+  if (scheduler_ && scheduler_->running()) {
+    scheduler_->save(".dev-assistant/scheduled_tasks.jsonl");
+    scheduler_->stop();
+  }
+  if (scheduler_thread_.joinable()) scheduler_thread_.join();
+}
+
+bool App::run_pipeline(const std::string& objective) {
+  Pipeline pipeline(1);  // Reviewer 回退重跑上限 1 次
+  auto runner = [this](const std::string& prompt, Identity role,
+                       const std::vector<StageOutput>&) -> ToolResult {
+    Agent agent(llm_, tools_, security_, approval_);
+    agent.set_depth(1);  // 各阶段以子代理深度运行（受限递归）
+    agent.run(prompt, true);
+    return {true, "阶段完成"};
+  };
+  std::vector<StageOutput> out;
+  bool ok = pipeline.run(objective, runner, out);
+  for (const auto& o : out)
+    std::printf("  [%s] %s\n", pipeline_stage_name(o.stage), o.ok ? "✅" : "❌");
+  return ok;
 }
 
 int App::resume_last_session() {
