@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <ctime>
 #include <fstream>
 #include <set>
 #include <sstream>
