@@ -28,16 +28,25 @@ void print_usage() {
       "  --max-tokens <n>  上下文窗口预算（默认 262144；仅本地预算，不发给 LLM API）\n"
       "  --no-hooks        禁用钩子（session-start 等钩子不执行）\n"
       "  --no-approval     无审批模式（写类/执行类工具直接执行，不弹确认）\n"
+      "  --resume          从最近会话恢复对话上下文\n"
       "  --hooks-dry-run   预览将执行的钩子（不实际执行）\n"
       "  --verbose         启用详细日志输出\n");
 }
 
 void cmd_init() {
+  // B5：与运行时解析器一致的 [[models]] 数组格式（原单模型根级键
+  // 与 README/加载器不一致，init 后无法直接启动）
   const char* tpl =
-      "# dev-assistant 配置\n"
-      "api_url = \"${API_URL:-https://api.deepseek.com/v1/chat/completions}\"\n"
+      "# dev-assistant 模型配置\n"
+      "# ${VAR} / ${VAR:-default} 会在启动时从环境变量展开；.env 也会被加载\n"
+      "[[models]]\n"
+      "name = \"deepseek\"                          # 显示名（/model 切换用）\n"
+      "provider = \"openai-compatible\"             # openai-compatible / anthropic / ollama\n"
+      "api_url = \"https://api.deepseek.com/v1\"    # 缺 /chat/completions 自动补全\n"
       "api_key = \"${API_KEY}\"\n"
-      "model = \"deepseek-chat\"\n"
+      "model = \"deepseek-chat\"                    # 模型 ID\n"
+      "temperature = 0.2\n"
+      "max_output_tokens = 8192\n"
       "max_turns = 40\n";
   std::FILE* f = std::fopen(".dev-assistant-models.toml", "wx");
   if (!f) {
@@ -68,7 +77,7 @@ int main(int argc, char** argv) {
   std::string project, config_path, model_name;
   long max_tokens = 0;
   bool no_hooks = false, hooks_dry_run = false, verbose = false;
-  bool no_approval = false;
+  bool no_approval = false, resume = false;
   std::vector<std::string> rest;
   for (int i = 1; i < argc; i++) {
     std::string a = argv[i];
@@ -82,6 +91,7 @@ int main(int argc, char** argv) {
     }
     if (a == "--no-hooks") { no_hooks = true; continue; }
     if (a == "--no-approval") { no_approval = true; continue; }
+    if (a == "--resume") { resume = true; continue; }
     if (a == "--hooks-dry-run") { hooks_dry_run = true; continue; }
     if (a == "--verbose") { verbose = true; continue; }
     if (a == "--project" || a == "--config" || a == "--model" ||
@@ -94,8 +104,9 @@ int main(int argc, char** argv) {
         if (!out) max_tokens = std::atol(inline_v.c_str());
         else *out = inline_v;
       } else if (i + 1 < argc) {
+        // ++i：消费参数值（B6 修复——原缺 ++i 把选项名赋给 *out，值落入 rest）
         if (!out) max_tokens = std::atol(argv[++i]);
-        else *out = argv[i];
+        else *out = argv[++i];
       } else {
         std::fprintf(stderr, "%s 需要参数\n", a.c_str());
         return 2;
@@ -172,6 +183,13 @@ int main(int argc, char** argv) {
 
   // REPL 模式
   if (!app.init(config_path)) return init_fail(config_path);
+  if (resume) {
+    int n = app.resume_last_session();
+    if (n > 0)
+      std::printf("已恢复最近会话（%d 条事件，上下文续接）\n", n);
+    else
+      std::printf("没有可恢复的会话，从头开始\n");
+  }
   if (!apply_model()) return 1;
   return da::run_repl(app);
 }

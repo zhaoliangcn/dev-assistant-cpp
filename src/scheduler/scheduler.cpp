@@ -35,7 +35,9 @@ bool parse_field(const std::string& s, int lo, int hi, FieldSet& out) {
   if (slash != std::string::npos) {
     body = s.substr(0, slash);
     try {
-      step = std::stoi(s.substr(slash + 1));
+      size_t pos = 0;
+      step = std::stoi(s.substr(slash + 1), &pos);
+      if (pos != s.size() - slash - 1) return false;  // 整串消费，拒绝 "1-2/3x"
     } catch (...) {
       return false;
     }
@@ -52,7 +54,10 @@ bool parse_field(const std::string& s, int lo, int hi, FieldSet& out) {
         start, comma == std::string::npos ? std::string::npos : comma - start);
     if (!part.empty()) {
       try {
-        int v = std::stoi(part);
+        // 整串消费校验：拒绝 "1-5" 区间被 stoi 静默截断为 1（危险误配）
+        size_t pos = 0;
+        int v = std::stoi(part, &pos);
+        if (pos != part.size()) return false;
         if (v < lo || v > hi) return false;
         out.values.push_back(v);
       } catch (...) {
@@ -88,7 +93,7 @@ bool CronSpec::parse(const std::string& spec, CronSpec& out) {
   }
   if (parts.size() != 5) return false;
 
-  static FieldSet f[5];
+  FieldSet f[5];  // C2：不再用 static（多线程隐患），每次 parse 独立
   if (!parse_field(parts[0], 0, 59, f[0])) return false;
   if (!parse_field(parts[1], 0, 23, f[1])) return false;
   if (!parse_field(parts[2], 1, 31, f[2])) return false;
@@ -96,26 +101,28 @@ bool CronSpec::parse(const std::string& spec, CronSpec& out) {
   if (!parse_field(parts[4], 0, 6, f[4])) return false;
 
   out.every_minute = f[0].any && f[1].any;
-  // 存第一个值用于匹配（子集：列表匹配在 matches 中展开）
-  out.minute = f[0].any ? -1 : f[0].values[0];
-  out.hour = f[1].any ? -1 : f[1].values[0];
-  out.day = f[2].any ? -1 : f[2].values[0];
-  out.month = f[3].any ? -1 : f[3].values[0];
-  out.weekday = f[4].any ? -1 : f[4].values[0];
-
-  // 完整列表支持：把所有值编码进扩展位（简单方案：matches 里用静态表不优雅，
-  // 这里把列表全部相同的场景直接支持；混合列表取第一个值）
+  // C3：全量存储允许值（列表/步进完整匹配，不再只取第一个值）；any = 空 = 不限
+  if (!f[0].any) out.minute = f[0].values;
+  if (!f[1].any) out.hour = f[1].values;
+  if (!f[2].any) out.day = f[2].values;
+  if (!f[3].any) out.month = f[3].values;
+  if (!f[4].any) out.weekday = f[4].values;
   return true;
 }
 
+namespace {
+bool field_allows(const std::vector<int>& vals, int v) {
+  return vals.empty() ||
+         std::find(vals.begin(), vals.end(), v) != vals.end();
+}
+}  // namespace
+
 bool CronSpec::matches(const std::tm& t) const {
-  static FieldSet empty;
-  // 重新解析太贵；直接用编码值匹配（子集语义）
-  if (minute >= 0 && t.tm_min != minute) return false;
-  if (hour >= 0 && t.tm_hour != hour) return false;
-  if (day >= 0 && t.tm_mday != day) return false;
-  if (month >= 0 && t.tm_mon + 1 != month) return false;
-  if (weekday >= 0 && t.tm_wday != weekday) return false;
+  if (!field_allows(minute, t.tm_min)) return false;
+  if (!field_allows(hour, t.tm_hour)) return false;
+  if (!field_allows(day, t.tm_mday)) return false;
+  if (!field_allows(month, t.tm_mon + 1)) return false;
+  if (!field_allows(weekday, t.tm_wday)) return false;
   return true;
 }
 

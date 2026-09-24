@@ -6,6 +6,9 @@
 
 namespace da {
 
+// C5：HTTP 错误是否值得重试（传输错误/429/5xx = true；4xx 参数/鉴权错误 = false）
+bool retryable_http_error(const std::string& finish_reason);
+
 class LlmClient {
 public:
   LlmClient();

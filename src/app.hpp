@@ -6,6 +6,7 @@
 #include <thread>
 #include <vector>
 
+#include "agent/agent.hpp"
 #include "dream/dream.hpp"
 #include "hooks/hooks.hpp"
 #include "llm/client.hpp"
@@ -95,6 +96,10 @@ private:
   std::thread scheduler_thread_;
   bool scheduler_started_ = false;
   bool verbose_ = false;
+  // 持久 Agent（B2）：跨轮保留对话历史，REPL 第二轮可拿到上一轮上下文
+  std::unique_ptr<Agent> agent_;
+  // --resume 解析出的历史（B3）：首次 process_message 时注入持久 Agent
+  std::vector<ChatMessage> resumed_history_;
 };
 
 }  // namespace da

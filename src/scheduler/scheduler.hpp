@@ -9,10 +9,11 @@
 
 namespace da {
 
-// cron 五段子集：分 时 日 月 周；支持 * / 数字 / 逗号列表
+// cron 五段子集：分 时 日 月 周；支持 * / 数字 / 逗号列表 / */n 步进
 struct CronSpec {
   bool every_minute = false;
-  int minute = -1, hour = -1, day = -1, month = -1, weekday = -1;  // -1 = 不限
+  // 每字段允许值集合（C3：列表与步进全量匹配；空 = 不限）
+  std::vector<int> minute, hour, day, month, weekday;
   // 解析失败返回 false
   static bool parse(const std::string& spec, CronSpec& out);
   // 判断给定时刻是否匹配

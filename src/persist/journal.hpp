@@ -5,6 +5,8 @@
 #include <mutex>
 #include <string>
 
+#include <nlohmann/json.hpp>
+
 namespace da {
 
 class Journal {
@@ -15,8 +17,9 @@ public:
   bool open(const std::string& path);
   void close();
 
-  // 追加一行 JSON 事件（自动加时间戳）
-  void append(const std::string& type, const std::string& json_payload);
+  // 追加一行 JSON 事件（自动加时间戳；payload 经 nlohmann 序列化，
+  // 任意字符串内容安全转义——修 C7 手工拼接易碎问题）
+  void append(const std::string& type, const nlohmann::json& payload = {});
 
   bool is_open() const { return file_.is_open(); }
 

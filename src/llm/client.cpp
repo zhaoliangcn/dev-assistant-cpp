@@ -1,5 +1,7 @@
 #include "llm/client.hpp"
 
+#include <cstdlib>
+
 #include <thread>
 #include <chrono>
 
@@ -8,6 +10,21 @@
 #include "llm/provider/openai.hpp"
 
 namespace da {
+
+// C5：仅传输错误（无状态码）与 429/5xx 值得重试；
+// 400/401/403/404 等参数/鉴权错误重试无意义（白等 15s），立即失败。
+// 注意 "http_error: HTTP ..." 冒号后有空格，须先剥离再判定
+// （此前 substr(11) 残留空格导致全部误判为传输错误而重试）。
+bool retryable_http_error(const std::string& finish_reason) {
+  if (finish_reason.rfind("http_error:", 0) != 0) return false;
+  std::string rest = finish_reason.substr(11);  // strlen("http_error:")
+  size_t nb = rest.find_first_not_of(" \t");
+  if (nb == std::string::npos) return true;  // 只有前缀，按传输错误处理
+  rest = rest.substr(nb);
+  if (rest.rfind("HTTP ", 0) != 0) return true;  // 传输层错误（无状态码）
+  int code = std::atoi(rest.c_str() + 5);
+  return code == 429 || (code >= 500 && code <= 599);
+}
 
 LlmClient::LlmClient() : provider_(std::make_unique<OpenAiProvider>()) {}
 
@@ -39,7 +56,7 @@ bool LlmClient::switch_model(const std::string& name) {
 }
 
 LlmResponse LlmClient::chat(const ChatRequest& req, const DeltaCallback& on_delta) {
-  // 重试：指数退避；条件 = HTTP 429 或 502/503/504（最多 5 次）
+  // 重试：指数退避（最多 5 次）；条件 = 传输错误 / 429 / 5xx（C5）
   LlmResponse resp;
   for (int attempt = 0; attempt < 5; attempt++) {
     if (attempt > 0) {
@@ -48,7 +65,7 @@ LlmResponse LlmClient::chat(const ChatRequest& req, const DeltaCallback& on_delt
     }
     resp = provider_->chat(config_.current_model(), req, on_delta);
     if (resp.finish_reason.rfind("http_error:", 0) != 0) return resp;
-    // HTTP 错误：所有传输失败都退避重试（简化；可细分 429/5xx）
+    if (!retryable_http_error(resp.finish_reason)) return resp;  // 4xx 立即失败
   }
   return resp;
 }

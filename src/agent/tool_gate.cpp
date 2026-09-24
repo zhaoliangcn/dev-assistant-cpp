@@ -32,14 +32,26 @@ std::optional<std::string> tool_gate(const ToolDefinition& def,
   }
 
   // 3) 审批（写类 / 执行类）——与 interactive 解耦：
-  //    --no-approval 显式放行；交互模式弹询问；非交互且无审批通道默认拒绝
+  //    --no-approval 显式放行；交互模式弹询问；非交互且无审批通道默认拒绝。
+  //    审批 target 按工具类型细化（S3）：
+  //    - exec_command → "exec:<command+首参>"（命令签名，防"允许 ls"变"允许任意命令"）
+  //    - 路径类写工具 → "<工具名>:<相对路径>"（防"允许 write_file"变全工具放行）
   if (def.needs_approval && !approval.auto_approve_all()) {
     if (!interactive)
       return "非交互模式无审批通道，已拒绝执行工具: " + def.name +
              "（如需放行请用 --no-approval 启动）";
-    std::string title = def.name + ": " +
-                        args.value("path", args.value("command", ""));
-    if (!approval.request(title, ApprovalScope::Tool, def.name))
+    std::string detail = args.value("path", args.value("command", ""));
+    std::string target = def.name;
+    if (def.name == "exec_command") {
+      target = "exec:" + args.value("command", "");
+      if (args.contains("args") && args["args"].is_array() &&
+          !args["args"].empty() && args["args"][0].is_string())
+        target += " " + args["args"][0].get<std::string>();
+    } else if (!detail.empty()) {
+      target += ":" + detail;
+    }
+    std::string title = def.name + ": " + detail;
+    if (!approval.request(title, ApprovalScope::Tool, target))
       return "用户拒绝执行";
   }
   return std::nullopt;

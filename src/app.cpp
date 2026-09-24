@@ -73,16 +73,23 @@ int App::process_message(const std::string& input) {
   if (verbose_)
     std::fprintf(stderr, "[verbose] 模型=%s 输入=%zu 字符\n",
                  llm_.config().current_model().model.c_str(), input.size());
-  Agent agent(llm_, tools_, security_, approval_);
-  int rc = agent.run(input, true);
-  last_history_ = agent.history();  // 供 REPL /history 查看
-
-  // 对话事件落盘（JSONL 0600）
-  Journal j;
-  if (j.open(last_session_dir_ + "/events.jsonl")) {
-    j.append("user_message", R"("role":"user")");
-    j.close();
+  // 持久 Agent（B2）：首轮创建，后续轮次复用 → 模型可见完整对话上下文
+  if (!agent_) {
+    agent_ = std::make_unique<Agent>(llm_, tools_, security_, approval_);
+    agent_->set_context_budget((size_t)max_tokens_);  // B1：压缩阈值=上下文预算
   }
+  // --resume 重建的历史（B3）：仅在首次注入
+  if (!resumed_history_.empty()) {
+    agent_->set_history(std::move(resumed_history_));
+    resumed_history_.clear();
+  }
+  // B3：挂载会话日志，Agent 内真写 user/assistant/tool 事件（脱敏）
+  Journal j;
+  if (j.open(last_session_dir_ + "/events.jsonl")) agent_->set_journal(&j);
+  int rc = agent_->run(input, true);
+  agent_->set_journal(nullptr);
+  j.close();
+  last_history_ = agent_->history();  // 供 REPL /history 查看
   return rc;
 }
 
@@ -156,7 +163,14 @@ bool App::run_pipeline(const std::string& objective) {
     Agent agent(llm_, tools_, security_, approval_);
     agent.set_depth(1);  // 各阶段以子代理深度运行（受限递归）
     agent.run(prompt, true);
-    return {true, "阶段完成"};
+    // B4：返回子代理真实 assistant 文本（供 Reviewer/Tester/Repair 消费），
+    // 而非占位字符串——否则流水线各阶段拿到的"上阶段产出"全是空话
+    for (auto it = agent.history().rbegin(); it != agent.history().rend(); ++it) {
+      if (it->role == "assistant" && !it->tool_calls.empty()) continue;
+      if (it->role == "assistant" && !it->content.empty())
+        return {true, it->content};
+    }
+    return {false, "阶段未产出文本结果"};
   };
   std::vector<StageOutput> out;
   bool ok = pipeline.run(objective, runner, out);
@@ -183,15 +197,36 @@ int App::resume_last_session() {
   std::string path = base + "/" + latest + "/events.jsonl";
   FILE* f = std::fopen(path.c_str(), "r");
   if (!f) return 0;
-  int count = 0;
-  char buf[8192];
-  // 逐行读 JSONL；本实现的日志格式 {"ts":...,"type":...}，
-  // resume 恢复的是"有会话发生过"这一事实 + 提示用户；
-  // 完整消息级恢复需要 persist 层记录完整 payload，此处恢复为可继续对话状态
-  while (std::fgets(buf, sizeof buf, f)) count++;
+  // B3：解析 JSONL 事件，重建对话历史（user/assistant/tool 真实内容）
+  std::vector<ChatMessage> rebuilt;
+  char buf[65536];
+  while (std::fgets(buf, sizeof buf, f)) {
+    nlohmann::json ev = nlohmann::json::parse(buf, nullptr, false);
+    if (ev.is_discarded()) continue;
+    std::string type = ev.value("type", "");
+    if (type == "user_message") {
+      rebuilt.push_back({"user", ev.value("content", ""), "", {}});
+    } else if (type == "assistant_message") {
+      ChatMessage m{"assistant", ev.value("content", ""), "", {}};
+      if (ev.contains("tool_calls") && ev["tool_calls"].is_array()) {
+        for (auto& tc : ev["tool_calls"])
+          m.tool_calls.push_back({tc.value("id", ""), tc.value("name", ""),
+                                  tc.value("arguments", "")});
+      }
+      rebuilt.push_back(std::move(m));
+    } else if (type == "tool_result") {
+      rebuilt.push_back({"tool", ev.value("content", ""),
+                         ev.value("tool_call_id", ""), {}});
+    }
+  }
   std::fclose(f);
+  if (rebuilt.empty()) return 0;
+  // 历史须以 user/assistant 结尾且 tool 结果有主：丢弃尾部悬空 assistant
+  // tool_calls（其 tool 结果可能在下一会话）——保守起见原样注入，由
+  // Compressor/模型容错；仅记录条数
+  resumed_history_ = std::move(rebuilt);
   last_session_dir_ = base + "/" + latest;
-  return count;
+  return (int)resumed_history_.size();
 }
 
 }  // namespace da

@@ -78,12 +78,14 @@ add_executable(da_tests
   tests/test_llm.cpp
   tests/test_tools.cpp
   tests/test_security.cpp
+  tests/test_scheduler.cpp
   src/config/toml.cpp
   src/utils/frontmatter.cpp
   src/utils/gitignore.cpp
   src/llm/provider/openai.cpp
   src/llm/provider/anthropic.cpp
   src/llm/provider/ollama.cpp
+  src/llm/client.cpp
   src/llm/http.cpp
   src/llm/tls.cpp
   src/tools/registry.cpp
@@ -92,6 +94,7 @@ add_executable(da_tests
   src/tools/subagent.cpp
   src/security/policy.cpp
   src/security/approval.cpp
+  src/scheduler/scheduler.cpp
   src/agent/tool_gate.cpp
 )
 target_include_directories(da_tests PRIVATE third_party src)

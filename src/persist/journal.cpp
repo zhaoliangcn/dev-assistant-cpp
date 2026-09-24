@@ -21,16 +21,16 @@ void Journal::close() {
   if (file_.is_open()) file_.close();
 }
 
-void Journal::append(const std::string& type, const std::string& json_payload) {
+void Journal::append(const std::string& type, const nlohmann::json& payload) {
   std::lock_guard<std::mutex> lk(mu_);
   if (!file_.is_open()) return;
   auto now = std::chrono::system_clock::now();
   std::time_t t = std::chrono::system_clock::to_time_t(now);
   char ts[32];
   std::strftime(ts, sizeof ts, "%Y-%m-%dT%H:%M:%S", std::localtime(&t));
-  file_ << "{\"ts\":\"" << ts << "\",\"type\":\"" << type << "\"";
-  if (!json_payload.empty()) file_ << "," << json_payload;
-  file_ << "}\n";
+  nlohmann::json entry{{"ts", ts}, {"type", type}};
+  if (payload.is_object()) entry.update(payload);  // nlohmann 转义，防畸形 JSONL
+  file_ << entry.dump() << "\n";
   file_.flush();
 }
 

@@ -3,6 +3,7 @@
 
 #include <string>
 
+#include "llm/client.hpp"
 #include "llm/provider/openai.hpp"
 
 using da::apply_stream_delta;
@@ -88,6 +89,23 @@ static void test_http_error_reason() {
             "http_error: curl 错误: timeout");
 }
 
+// —— C5：重试判定（4xx 立即失败，传输错误/429/5xx 可重试）——
+static void test_retryable_http_error() {
+  // 4xx 参数/鉴权错误：不重试
+  EXPECT(!da::retryable_http_error("http_error: HTTP 401 bad key"));
+  EXPECT(!da::retryable_http_error("http_error: HTTP 400 bad request"));
+  EXPECT(!da::retryable_http_error("http_error: HTTP 403 forbidden"));
+  EXPECT(!da::retryable_http_error("http_error: HTTP 404 not found"));
+  // 429 / 5xx / 传输错误：可重试
+  EXPECT(da::retryable_http_error("http_error: HTTP 429 rate limited"));
+  EXPECT(da::retryable_http_error("http_error: HTTP 502 bad gateway"));
+  EXPECT(da::retryable_http_error("http_error: HTTP 503 unavailable"));
+  EXPECT(da::retryable_http_error("http_error: curl 错误: timeout"));
+  // 非 http_error 前缀：不重试（正常 finish_reason）
+  EXPECT(!da::retryable_http_error("stop"));
+  EXPECT(!da::retryable_http_error("tool_calls"));
+}
+
 int test_llm() {
   test_normalize_chat_url();
   test_stream_content();
@@ -95,5 +113,6 @@ int test_llm() {
   test_stream_content_beats_reasoning();
   test_stream_tool_calls_fragments();
   test_http_error_reason();
+  test_retryable_http_error();
   return g_stats.failed;
 }

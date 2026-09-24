@@ -23,9 +23,14 @@ int Agent::run(const std::string& user_input, bool interactive,
   if (history_.empty())
     history_.push_back({"system", build_system_prompt(nullptr), "", {}});
   history_.push_back({"user", user_input, "", {}});
+  // B3：真写用户消息（脱敏后落盘，供 --resume 重建）
+  if (journal_)
+    journal_->append("user_message",
+                     {{"content", redact_secrets(user_input)}});
 
   // loop step：直到无 tool_calls 或超轮次
   for (int turn = 0; turn < max_turns_; turn++) {
+    compressor_.maybe_compress(history_);  // B1：超阈值先压缩再请求
     if (!step(interactive, on_delta)) break;
   }
   return 0;
@@ -76,14 +81,30 @@ bool Agent::step(bool interactive, const DeltaCallback& on_delta) {
   // 无工具调用 → 本轮结束
   if (resp.tool_calls.empty()) {
     history_.push_back({"assistant", resp.content, "", {}});
+    if (journal_)
+      journal_->append("assistant_message",
+                       {{"content", redact_secrets(resp.content)}});
     return false;
   }
 
   // 有工具调用：先入 assistant 消息（含 tool_calls），逐个执行
   history_.push_back({"assistant", resp.content, "", resp.tool_calls});
+  if (journal_) {
+    nlohmann::json tcs = nlohmann::json::array();
+    for (auto& tc : resp.tool_calls)
+      tcs.push_back({{"id", tc.id}, {"name", tc.name},
+                     {"arguments", tc.arguments}});
+    journal_->append("assistant_message",
+                     {{"content", redact_secrets(resp.content)},
+                      {"tool_calls", tcs}});
+  }
   for (auto& tc : resp.tool_calls) {
     ToolResult r = execute_tool(tc, interactive);
     history_.push_back({"tool", r.output, tc.id, {}});
+    if (journal_)
+      journal_->append("tool_result", {{"tool", tc.name},
+                                       {"tool_call_id", tc.id},
+                                       {"content", redact_secrets(r.output)}});
   }
   return true;  // 继续下一 step（让模型消化工具结果）
 }

@@ -8,6 +8,7 @@ int test_gitignore();
 int test_llm();
 int test_tools();
 int test_security();
+int test_scheduler();
 
 TestStats g_stats;
 
@@ -19,6 +20,7 @@ int main() {
   test_llm();
   test_tools();
   test_security();
+  test_scheduler();
   std::printf("passed=%d failed=%d\n", g_stats.passed, g_stats.failed);
   return g_stats.failed == 0 ? 0 : 1;
 }

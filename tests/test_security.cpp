@@ -131,6 +131,27 @@ int test_security() {
     EXPECT(tool_gate(write_def, evil, p, lax, false).has_value());
   }
 
+  // ---- S3：Session 授权粒度（命令签名 / 路径前缀 + 边界感知）----
+  {
+    ApprovalManager m(false);
+    using SC = std::chrono::steady_clock;
+    // 命令签名："exec:ls" 不应命中 "exec:lsof"（原实现 rfind 前缀会命中）
+    m.grant(ApprovalScope::Tool, "exec:ls");
+    EXPECT(m.has_grant(ApprovalScope::Tool, "exec:ls"));
+    EXPECT(m.has_grant(ApprovalScope::Tool, "exec:ls -la"));  // 边界=空格
+    EXPECT(!m.has_grant(ApprovalScope::Tool, "exec:lsof"));   // 非边界
+    EXPECT(!m.has_grant(ApprovalScope::Tool, "exec:rm"));
+    // 路径前缀："write_file:sub/" 命中子路径，不命中同名前缀目录
+    m.grant(ApprovalScope::Tool, "write_file:sub/");
+    EXPECT(m.has_grant(ApprovalScope::Tool, "write_file:sub/a.txt"));
+    EXPECT(!m.has_grant(ApprovalScope::Tool, "write_file:subdir/x"));
+    EXPECT(!m.has_grant(ApprovalScope::Tool, "edit_file:sub/a.txt"));  // scope 内工具不同
+    // 过期授权不生效
+    ApprovalManager exp(false);
+    exp.grant(ApprovalScope::Tool, "exec:ls", std::chrono::seconds(-1));
+    EXPECT(!exp.has_grant(ApprovalScope::Tool, "exec:ls"));
+  }
+
   cleanup_env();
   return g_stats.failed;
 }

@@ -4,7 +4,9 @@
 #include <string>
 #include <vector>
 
+#include "agent/compressor.hpp"
 #include "llm/client.hpp"
+#include "persist/journal.hpp"
 #include "security/approval.hpp"
 #include "security/policy.hpp"
 #include "tools/registry.hpp"
@@ -29,6 +31,13 @@ public:
   // 子代理深度（父代理为 0，spawn_subagent 传递 depth+1）
   void set_depth(int d) { depth_ = d; }
 
+  // 上下文预算（B1）：--max-tokens 透传为压缩阈值；超限自动压缩历史
+  void set_context_budget(size_t tokens) { compressor_.set_threshold(tokens); }
+
+  // 会话日志（B3）：挂载后真写 user/assistant/tool 事件（内容脱敏）；
+  // 供 --resume 解析重建历史。不持有所有权。
+  void set_journal(Journal* j) { journal_ = j; }
+
   // 执行一次完整交互：start_turn → loop step → 结束
   // 返回 0 成功；on_delta 可选：每个 token 增量回调（流式转发给调用方）
   int run(const std::string& user_input, bool interactive,
@@ -50,6 +59,8 @@ private:
   std::vector<ChatMessage> history_;
   int max_turns_ = 40;
   int depth_ = 0;  // 子代理深度 ≤3
+  Compressor compressor_;  // B1：每 step 前检查并压缩超限历史
+  Journal* journal_ = nullptr;  // B3：会话事件落盘（非拥有）
 };
 
 }  // namespace da
