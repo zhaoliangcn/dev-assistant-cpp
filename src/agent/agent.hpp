@@ -1,5 +1,6 @@
 #pragma once
 // Agent 主循环（对应 Rust agent/mod.rs 的 start_turn/step/run）
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -9,6 +10,15 @@
 #include "tools/registry.hpp"
 
 namespace da {
+
+// 工具执行安全门：路径校验 → 危险命令硬拦 → 审批（与 interactive 解耦）。
+// 返回 std::nullopt = 放行；否则为拒绝原因。供 Agent::execute_tool 与单测共用。
+// approval 须非 const：Session 级授权会写入 grants_
+std::optional<std::string> tool_gate(const ToolDefinition& def,
+                                     const nlohmann::json& args,
+                                     const SecurityPolicy& security,
+                                     ApprovalManager& approval,
+                                     bool interactive);
 
 class Agent {
 public:

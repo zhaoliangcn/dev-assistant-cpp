@@ -121,26 +121,12 @@ ToolResult Agent::execute_tool(const ChatMessage::ToolCall& tc,
   const ToolDefinition* def = tools_.find(tc.name);
   if (!def) return {false, "未知工具: " + tc.name};
 
-  // 安全顺序：静态校验 → 审批 → 执行
+  // 安全顺序：静态校验 → 危险命令硬拦 → 审批 → 执行（tool_gate 供单测共用）
   nlohmann::json args = nlohmann::json::parse(tc.arguments, nullptr, false);
   if (args.is_discarded()) return {false, "工具参数 JSON 解析失败"};
 
-  // 路径类参数校验
-  if (def->path_check != PathCheck::None) {
-    std::string path = args.value("path", "");
-    std::string reason;
-    if (!path.empty() &&
-        !security_.validate_path(path, def->path_check, reason))
-      return {false, "安全策略拒绝: " + reason};
-  }
-
-  // 审批（写类 / 执行类）
-  if (def->needs_approval && interactive) {
-    std::string title = tc.name + ": " +
-                        args.value("path", args.value("command", ""));
-    if (!approval_.request(title, ApprovalScope::Tool, tc.name))
-      return {false, "用户拒绝执行"};
-  }
+  if (auto deny = tool_gate(*def, args, security_, approval_, interactive))
+    return {false, *deny};
 
   ToolContext ctx = make_ctx(security_);
   ToolResult r = tools_.dispatch(tc.name, args, ctx);

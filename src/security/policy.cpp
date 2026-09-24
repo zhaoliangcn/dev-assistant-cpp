@@ -45,33 +45,63 @@ bool SecurityPolicy::validate_path(const std::string& path, PathCheck check,
   if (check == PathCheck::None) return true;
   if (path.empty()) { reason = "空路径"; return false; }
 
-  // 敏感文件拦截（写类操作时由调用方决定；这里统一提示）
   // 规范化为绝对路径
   std::string abs = path;
   if (abs[0] != '/') abs = workspace_ + "/" + abs;
 
-  // 逐级 lstat 检查 symlink（O_NOFOLLOW 等效）
-  std::string cur;
-  size_t i = 1;
-  while (i <= abs.size()) {
-    size_t slash = abs.find('/', i);
-    std::string seg = abs.substr(1, (slash == std::string::npos ? abs.size() : slash) - 1);
-    cur = "/" + seg;
-    struct stat st;
-    if (::lstat(cur.c_str(), &st) == 0 && S_ISLNK(st.st_mode)) {
-      // 最终组件允许是 symlink 的场景极少，统一拒绝工作区内跳转
-      if (slash != std::string::npos) {
+  // 词法规范化：消除 . 与 .. 段（防 workspace/../outside 绕过前缀边界）
+  {
+    std::vector<std::string> segs;
+    size_t start = 0;
+    while (start <= abs.size()) {
+      size_t slash = abs.find('/', start);
+      std::string seg = abs.substr(
+          start, slash == std::string::npos ? std::string::npos : slash - start);
+      if (!seg.empty() && seg != ".") {
+        if (seg == "..") {
+          if (segs.empty()) {
+            reason = "路径越界（过多 ..）: " + path;
+            return false;
+          }
+          segs.pop_back();
+        } else {
+          segs.push_back(seg);
+        }
+      }
+      if (slash == std::string::npos) break;
+      start = slash + 1;
+    }
+    std::string norm;
+    for (auto& s : segs) { norm += "/"; norm += s; }
+    abs = norm.empty() ? "/" : norm;
+  }
+
+  // 逐级 lstat 检查 symlink——仅检查工作区前缀之下的组件：
+  // 工作区路径本身可能是用户有意选择的 symlink（如 macOS /tmp → private/tmp），
+  // 不属于逃逸面；工作区内新建的 symlink（含末段）一律拒绝
+  {
+    size_t ws_len = workspace_.size();
+    size_t i = ws_len + 1;  // 跳过工作区前缀，从其下第一段开始
+    while (i <= abs.size()) {
+      size_t slash = abs.find('/', i);
+      std::string cur =
+          abs.substr(0, slash == std::string::npos ? abs.size() : slash);
+      struct stat st;
+      if (::lstat(cur.c_str(), &st) == 0 && S_ISLNK(st.st_mode)) {
         reason = "路径包含 symlink: " + cur;
         return false;
       }
+      if (slash == std::string::npos) break;
+      i = slash + 1;
     }
-    if (slash == std::string::npos) break;
-    i = slash + 1;
   }
 
-  // 工作区边界
+  // 工作区边界（规范化后路径；前缀须落在分隔符边界上，防同名前缀目录绕过）
   if (check == PathCheck::Workspace || check == PathCheck::ReadOnly) {
-    if (abs.rfind(workspace_, 0) != 0) {
+    bool inside = abs == workspace_ ||
+                  (abs.rfind(workspace_, 0) == 0 &&
+                   abs.size() > workspace_.size() && abs[workspace_.size()] == '/');
+    if (!inside) {
       reason = "路径超出工作区: " + abs;
       return false;
     }

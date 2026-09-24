@@ -21,6 +21,9 @@ public:
   explicit ApprovalManager(bool auto_approve_all = false)
       : auto_all_(auto_approve_all) {}
 
+  // --no-approval 模式（全部放行）；供非交互路径判断是否有审批通道
+  bool auto_approve_all() const { return auto_all_; }
+
   // 询问用户审批；OneTime 通过即返回 true，Session 通过则记录授权
   // 返回：true 放行，false 拒绝
   bool request(const std::string& title, ApprovalScope scope,

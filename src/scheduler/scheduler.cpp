@@ -2,6 +2,9 @@
 
 #include <nlohmann/json.hpp>
 
+#include <sys/wait.h>
+#include <unistd.h>
+
 #include <ctime>
 #include <thread>
 
@@ -201,19 +204,65 @@ void Scheduler::fire(const ScheduledTask& t) {
 }
 
 void Scheduler::execute_shell(const ScheduledTask& t, const std::string& log_path) {
-  // 执行 shell 命令（零依赖 popen），捕获输出与退出码
-  std::string cmd = t.prompt + " 2>&1";
-  std::fflush(stdout);
-  FILE* p = ::popen(cmd.c_str(), "r");
+  // 不经 shell：prompt 按空白分词后 fork+execvp（防注入，与 exec_command
+  // 工具同防线）；分词不支持引号/管道等 shell 语法——这是安全取舍
+  std::vector<std::string> toks;
+  {
+    const std::string& s = t.prompt;
+    size_t i = 0;
+    while (i < s.size()) {
+      while (i < s.size() && (s[i] == ' ' || s[i] == '\t')) i++;
+      size_t b = i;
+      while (i < s.size() && s[i] != ' ' && s[i] != '\t') i++;
+      if (i > b) toks.push_back(s.substr(b, i - b));
+    }
+  }
+
   std::string out;
   int rc = -1;
-  if (p) {
-    char buf[4096];
-    size_t n;
-    while ((n = std::fread(buf, 1, sizeof buf, p)) > 0 && out.size() < 4096)
-      out.append(buf, n);
-    if (out.size() > 4096) out += "...(截断)";
-    rc = ::pclose(p);
+  if (toks.empty()) {
+    out = "(空命令)";
+  } else {
+    int out_pipe[2];
+    if (::pipe(out_pipe) != 0) {
+      out = "(pipe 创建失败)";
+    } else {
+      pid_t pid = ::fork();
+      if (pid < 0) {
+        ::close(out_pipe[0]);
+        ::close(out_pipe[1]);
+        out = "(fork 失败)";
+      } else if (pid == 0) {
+        // 子进程：进程组 + stdout/stderr 合并到管道 + execvp
+        ::setpgid(0, 0);
+        ::close(out_pipe[0]);
+        ::dup2(out_pipe[1], STDOUT_FILENO);
+        ::dup2(out_pipe[1], STDERR_FILENO);
+        ::close(out_pipe[1]);
+        std::vector<char*> cargv;
+        cargv.reserve(toks.size() + 1);
+        for (auto& a : toks) cargv.push_back(const_cast<char*>(a.c_str()));
+        cargv.push_back(nullptr);
+        ::execvp(toks[0].c_str(), cargv.data());
+        ::_exit(127);  // exec 失败
+      }
+      // 父进程：读输出（4KB 上限，超出丢弃但记截断标记）
+      ::close(out_pipe[1]);
+      char buf[4096];
+      ssize_t n;
+      bool truncated = false;
+      while ((n = ::read(out_pipe[0], buf, sizeof buf)) > 0) {
+        if (out.size() < 4096)
+          out.append(buf, n);
+        else
+          truncated = true;
+      }
+      ::close(out_pipe[0]);
+      if (truncated) out += "...(截断)";
+      int status = 0;
+      ::waitpid(pid, &status, 0);
+      rc = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+    }
   }
   // 执行日志（JSONL 追加）
   json entry{{"ts", (long)std::time(nullptr)},

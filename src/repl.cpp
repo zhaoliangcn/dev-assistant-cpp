@@ -1,5 +1,9 @@
 #include "repl.hpp"
 
+#include <fcntl.h>
+#include <sys/wait.h>
+#include <unistd.h>
+
 #include <cstdio>
 #include <cstdlib>
 #include <ctime>
@@ -12,7 +16,55 @@
 
 namespace da {
 
-// /grep：正则搜文件（对齐 Rust run_grep：递归文本文件、跳过大目录/大文件、上限 50 条）
+namespace {
+// fork+execvp 执行（不经 shell，防注入）；捕获 stdout，stderr 可选并入/静默。
+// 返回 {exit_code, output}
+std::pair<int, std::string> run_child_capture(
+    const std::vector<std::string>& argv, bool quiet_stderr) {
+  std::string out;
+  int pipefd[2];
+  if (::pipe(pipefd) != 0) return {-1, "(pipe 创建失败)"};
+  std::fflush(stdout);
+  pid_t pid = ::fork();
+  if (pid < 0) {
+    ::close(pipefd[0]);
+    ::close(pipefd[1]);
+    return {-1, "(fork 失败)"};
+  }
+  if (pid == 0) {
+    ::close(pipefd[0]);
+    ::dup2(pipefd[1], STDOUT_FILENO);
+    if (quiet_stderr) {
+      int devnull = ::open("/dev/null", O_WRONLY);
+      if (devnull >= 0) {
+        ::dup2(devnull, STDERR_FILENO);
+        ::close(devnull);
+      }
+    } else {
+      ::dup2(pipefd[1], STDERR_FILENO);
+    }
+    ::close(pipefd[1]);
+    std::vector<char*> cargv;
+    cargv.reserve(argv.size() + 1);
+    for (auto& a : argv) cargv.push_back(const_cast<char*>(a.c_str()));
+    cargv.push_back(nullptr);
+    ::execvp(cargv[0], cargv.data());
+    ::_exit(127);  // exec 失败
+  }
+  ::close(pipefd[1]);
+  char buf[4096];
+  ssize_t n;
+  while ((n = ::read(pipefd[0], buf, sizeof buf)) > 0) {
+    if (out.size() < 256 * 1024) out.append(buf, n);
+  }
+  ::close(pipefd[0]);
+  int status = 0;
+  ::waitpid(pid, &status, 0);
+  return {WIFEXITED(status) ? WEXITSTATUS(status) : -1, out};
+}
+}  // namespace
+
+// /grep：正则搜文件（对齐 Rust run_grep：递归文本文件、跳过大目录、上限每文件 5 条）
 static void run_grep_cmd(const std::string& pattern) {
   if (pattern.empty()) {
     std::printf("🔍 用法: /grep <正则>\n");
@@ -25,50 +77,43 @@ static void run_grep_cmd(const std::string& pattern) {
     std::printf("❌ 无效的正则表达式: %s\n", pattern.c_str());
     return;
   }
-  // 借助 grep 命令做递归与过滤（零依赖；正则语义由本函数 std::regex 复核）
-  std::string cmd = "grep -rnE --include='*' --exclude-dir=.git --exclude-dir=build"
-                    " --exclude-dir=build-asan --exclude-dir=build-musl"
-                    " --exclude-dir=node_modules --exclude-dir=.dev-assistant"
-                    " -I -m 5 -- " ;
-  cmd += "'" ;
-  for (char c : pattern) {  // 单引号转义
-    if (c == '\'') cmd += "'\\''";
-    else cmd += c;
-  }
-  cmd += "' . 2>/dev/null | head -50";
-  std::fflush(stdout);
-  int rc = std::system(cmd.c_str());
-  if (rc != 0) std::printf("🔍 未找到匹配 \"%s\" 的内容\n", pattern.c_str());
+  // fork+execvp（不经 shell）：pattern 作为单个 argv 传递，无注入面
+  auto [rc, out] = run_child_capture(
+      {"grep", "-rnE", "--exclude-dir=.git", "--exclude-dir=build",
+       "--exclude-dir=build-asan", "--exclude-dir=build-musl",
+       "--exclude-dir=node_modules", "--exclude-dir=.dev-assistant", "-I",
+       "-m", "5", "--", pattern, "."},
+      /*quiet_stderr=*/true);
+  if (rc != 0 || out.empty())
+    std::printf("🔍 未找到匹配 \"%s\" 的内容\n", pattern.c_str());
+  else
+    std::fputs(out.c_str(), stdout);
 }
 
-// /diff：git diff 查看工作区改动（可选路径参数）
+// /diff：git diff 查看工作区改动（可选路径参数，按空白分词作 argv 传递）
 static void run_diff_cmd(const std::string& args) {
-  std::string cmd = "git diff --";
-  if (!args.empty()) cmd += " " + args;
-  cmd += " 2>/dev/null";
-  std::fflush(stdout);
-  FILE* p = ::popen(cmd.c_str(), "r");
-  if (!p) {
-    std::printf("❌ git diff 执行失败\n");
-    return;
+  std::vector<std::string> argv{"git", "diff", "--"};
+  size_t i = 0;
+  while (i < args.size()) {
+    while (i < args.size() && (args[i] == ' ' || args[i] == '\t')) i++;
+    size_t b = i;
+    while (i < args.size() && args[i] != ' ' && args[i] != '\t') i++;
+    if (i > b) argv.push_back(args.substr(b, i - b));
   }
-  std::string out;
-  char buf[4096];
-  size_t n;
-  while ((n = std::fread(buf, 1, sizeof buf, p)) > 0) out.append(buf, n);
-  int rc = ::pclose(p);
+  auto [rc, out] = run_child_capture(argv, /*quiet_stderr=*/true);
   if (rc != 0) {
     std::printf("❌ git diff 执行失败（非 git 仓库或参数错误）\n");
     return;
   }
   // 去尾空白后判断是否有改动
-  while (!out.empty() && (out.back() == '\n' || out.back() == ' '))
-    out.pop_back();
-  if (out.empty()) {
+  std::string trimmed = out;
+  while (!trimmed.empty() && (trimmed.back() == '\n' || trimmed.back() == ' '))
+    trimmed.pop_back();
+  if (trimmed.empty()) {
     std::printf("ℹ️ 工作区没有未提交的改动\n");
     return;
   }
-  std::printf("%s\n", out.c_str());
+  std::fputs(out.c_str(), stdout);
 }
 
 static bool handle_slash(const std::string& line, App& app) {

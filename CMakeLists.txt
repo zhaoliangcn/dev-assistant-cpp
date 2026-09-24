@@ -34,6 +34,7 @@ set(DA_SOURCES
   src/agent/compressor.cpp
   src/agent/pipeline.cpp
   src/agent/agent.cpp
+  src/agent/tool_gate.cpp
   src/orchestrator/orchestrator.cpp
   src/scheduler/scheduler.cpp
   src/dream/dream.cpp
@@ -76,6 +77,7 @@ add_executable(da_tests
   tests/test_gitignore.cpp
   tests/test_llm.cpp
   tests/test_tools.cpp
+  tests/test_security.cpp
   src/config/toml.cpp
   src/utils/frontmatter.cpp
   src/utils/gitignore.cpp
@@ -89,6 +91,8 @@ add_executable(da_tests
   src/tools/system_tools.cpp
   src/tools/subagent.cpp
   src/security/policy.cpp
+  src/security/approval.cpp
+  src/agent/tool_gate.cpp
 )
 target_include_directories(da_tests PRIVATE third_party src)
 add_test(NAME unit COMMAND da_tests)
