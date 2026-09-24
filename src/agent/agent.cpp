@@ -36,15 +36,37 @@ bool Agent::step(bool interactive, const DeltaCallback& on_delta) {
   req.messages = history_;
   req.tools_json = tools_.to_openai_schema().dump();
 
-  LlmResponse resp =
-      llm_.chat(req, [interactive, &on_delta](const std::string& delta) {
+  LlmResponse resp;
+  bool saw_output = false;   // 本 step 是否有流式可见输出（决定收尾换行）
+  bool printed_any = false;  // 已输出非空白内容（过滤模型前导空行/空白 delta）
+  resp = llm_.chat(req, [interactive, &on_delta, &saw_output, &printed_any](
+                            const std::string& delta) {
+        // 模型常以前导 "\n" 开头（思维链/正文均是，甚至混在同一 delta 内）；
+        // 首个可见输出前丢弃纯空白 delta，并对首个混合 delta 剥离前导空白
+        if (!printed_any) {
+          size_t first = delta.find_first_not_of("\n\r \t");
+          if (first == std::string::npos) {
+            if (on_delta) on_delta(delta);  // WS 侧转发原文，仅本地不显示
+            return;
+          }
+          printed_any = true;
+          if (interactive && first > 0) {
+            std::fputs(delta.c_str() + first, stdout);  // 剥离前导空白后输出
+            std::fflush(stdout);
+            saw_output = true;
+            if (on_delta) on_delta(delta);
+            return;
+          }
+        }
         if (interactive) {
           std::fputs(delta.c_str(), stdout);
           std::fflush(stdout);
+          saw_output = true;
         }
         if (on_delta) on_delta(delta);  // 流式转发（Web WS 推送）
       });
-  if (interactive && !resp.content.empty()) std::fputs("\n", stdout);
+  // 仅在有可见输出的 step 收尾换行（工具调用轮无输出时不再产生空行）
+  if (interactive && saw_output) std::fputs("\n", stdout);
 
   if (resp.finish_reason.rfind("http_error:", 0) == 0) {
     std::fprintf(stderr, "LLM 请求失败: %s\n", resp.finish_reason.c_str());

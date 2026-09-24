@@ -19,9 +19,14 @@ void apply_stream_delta(const json& delta, StreamAccum& acc,
     }
   } else if (delta.contains("reasoning_content") &&
              delta["reasoning_content"].is_string()) {
-    // 推理型模型：正式 content 缺席时，推理流实时展示并累积兜底
+    // 推理型模型：正式 content 缺席时，推理流实时展示并累积兜底；
+    // 首块前发区分标记（💭），避免与正文混淆
     std::string piece = delta["reasoning_content"].get<std::string>();
     if (!acc.saw_content) {
+      if (!acc.saw_reasoning) {
+        acc.saw_reasoning = true;
+        if (on_delta) on_delta("💭 ");
+      }
       acc.reasoning += piece;
       if (on_delta && !piece.empty()) on_delta(piece);
     }

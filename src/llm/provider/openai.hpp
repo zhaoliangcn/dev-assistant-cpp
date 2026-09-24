@@ -13,6 +13,7 @@ struct StreamAccum {
   std::string content;
   std::string reasoning;   // reasoning_content 累积（正式 content 缺席时的兜底）
   bool saw_content = false;
+  bool saw_reasoning = false;  // 已输出过思维流（首次输出前发区分标记）
   std::string finish_reason;
   int prompt_tokens = 0;
   int completion_tokens = 0;
