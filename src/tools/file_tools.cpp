@@ -47,6 +47,14 @@ ToolResult read_file_tool(const nlohmann::json& args, ToolContext& ctx) {
   if (!ctx.security->validate_path(path, PathCheck::ReadOnly, reason))
     return {false, "路径被拒绝: " + reason};
 
+  // C8：大文件防护——超限直接拒绝（默认 10MB），避免 rdbuf() 一次性读入撑爆内存
+  {
+    struct stat st;
+    if (::stat(path.c_str(), &st) == 0 && S_ISREG(st.st_mode) &&
+        st.st_size > 10LL * 1024 * 1024)
+      return {false, "文件过大（>10MB），拒绝读取: " + path};
+  }
+
   std::ifstream f(path, std::ios::binary);
   if (!f) return {false, "无法读取文件: " + path};
   std::ostringstream ss;
@@ -74,6 +82,50 @@ ToolResult read_file_tool(const nlohmann::json& args, ToolContext& ctx) {
     return {true, out.str()};
   }
   return {true, content};
+}
+
+// C1：代码态花括号深度统计——跳过字符串/字符字面量与 // /* */ 注释，
+// 防止字面量或注释中的 { } 干扰函数边界判定。
+// 返回 depth 归零（闭合）时的行下标；未闭合则到文件尾。
+size_t find_code_block_end(const std::vector<std::string>& lines,
+                           size_t start) {
+  int depth = 0;
+  bool opened = false;
+  enum State { Code, LineComment, BlockComment, Str, Char } st = Code;
+  for (size_t j = start; j < lines.size(); j++) {
+    const std::string& l = lines[j];
+    for (size_t k = 0; k < l.size(); k++) {
+      char c = l[k];
+      char next = k + 1 < l.size() ? l[k + 1] : '\0';
+      if (st == LineComment) break;  // 行注释：跳过该行剩余
+      switch (st) {
+        case Code:
+          if (c == '/' && next == '/') st = LineComment;
+          else if (c == '/' && next == '*') { st = BlockComment; k++; }
+          else if (c == '"') st = Str;
+          else if (c == '\'') st = Char;
+          else if (c == '{') { depth++; opened = true; }
+          else if (c == '}') depth--;
+          break;
+        case BlockComment:
+          if (c == '*' && next == '/') { st = Code; k++; }
+          break;
+        case Str:
+          if (c == '\\') k++;
+          else if (c == '"') st = Code;
+          break;
+        case Char:
+          if (c == '\\') k++;
+          else if (c == '\'') st = Code;
+          break;
+        case LineComment:
+          break;  // 不可达（上方已处理）
+      }
+      if (st == Code && opened && depth <= 0) return j;
+    }
+    if (st == LineComment) st = Code;  // 行注释在行尾结束
+  }
+  return lines.size() - 1;  // 未闭合：到文件尾
 }
 
 ToolResult read_symbol_tool(const nlohmann::json& args, ToolContext& ctx) {
@@ -117,27 +169,20 @@ ToolResult read_symbol_tool(const nlohmann::json& args, ToolContext& ctx) {
 
   for (size_t i = 0; i < lines.size(); i++) {
     if (!is_def_line(lines[i])) continue;
-    // 确定起始缩进；块结束 = 出现一个缩进 ≤ 起始且非空的后继行（花括号或缩进语言均适用）
+    // 确定起始缩进；花括号语言用状态机找闭合（C1：跳过字符串/注释），
+    // 缩进式语言（Python 等）以缩进回归定界
     size_t indent = lines[i].find_first_not_of(" \t");
-    size_t depth = 0;
     bool opened = lines[i].find('{') != std::string::npos;
-    size_t end = i;
-    for (size_t j = i + 1; j < lines.size(); j++) {
-      const std::string& l = lines[j];
-      bool blank = l.find_first_not_of(" \t\r") == std::string::npos;
-      if (opened) {
-        for (char c : l) {
-          if (c == '{') depth++;
-          else if (c == '}') depth--;
-        }
-        end = j;
-        if (opened && depth <= 0 && l.find('}') != std::string::npos) break;
-      } else {
-        // 缩进式（Python 等）：回到 ≤ 起始缩进的非空行即结束
-        if (!blank) {
-          size_t ind = l.find_first_not_of(" \t");
-          if (ind <= indent) { end = j - 1; break; }
-        }
+    size_t end;
+    if (opened) {
+      end = find_code_block_end(lines, i);
+    } else {
+      end = i;
+      for (size_t j = i + 1; j < lines.size(); j++) {
+        const std::string& l = lines[j];
+        if (l.find_first_not_of(" \t\r") == std::string::npos) { end = j; continue; }
+        size_t ind = l.find_first_not_of(" \t");
+        if (ind <= indent) { end = j - 1; break; }
         end = j;
       }
     }
@@ -293,6 +338,9 @@ ToolResult grep_tool(const nlohmann::json& args, ToolContext& ctx) {
   int max_results = (int)arg_long(args, "max_results", 50);
   int hits = 0;
   for (const auto& f : files) {
+    // C8：跳过 >1MB 文件（对齐 Rust run_grep 的 max_file_size）
+    struct stat fst;
+    if (::stat(f.c_str(), &fst) == 0 && fst.st_size > 1024 * 1024) continue;
     std::ifstream in(f, std::ios::binary);
     if (!in) continue;
     std::string line;

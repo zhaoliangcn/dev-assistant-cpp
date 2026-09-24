@@ -111,8 +111,20 @@ bool SecurityPolicy::validate_path(const std::string& path, PathCheck check,
 
 DangerLevel SecurityPolicy::assess_command(const std::string& cmd) const {
   std::string lc = to_lower(cmd);
-  for (auto& re : dangerous_patterns_) {
-    if (std::regex_search(lc, re)) return DangerLevel::High;
+  // D3：廉价预筛——命令不含任何危险关键词时跳过 9 个 regex（热路径提速）。
+  // 关键词集合是 regex 触发词的超集，漏筛风险为零（多筛只会多跑 regex）。
+  static const char* kTriggers[] = {"rm",   "sudo", "su ",     "mkfs",
+                                    "dd ",  "dd=",  ":()",     "shutdown",
+                                    "reboot", "init", "/dev/sd", "chmod",
+                                    "curl", ">",    "mv ",     "cp "};
+  bool maybe = false;
+  for (const char* t : kTriggers) {
+    if (lc.find(t) != std::string::npos) { maybe = true; break; }
+  }
+  if (maybe) {
+    for (auto& re : dangerous_patterns_) {
+      if (std::regex_search(lc, re)) return DangerLevel::High;
+    }
   }
   // 写文件命令视为 Medium
   if (lc.find(">") != std::string::npos || lc.find("mv ") != std::string::npos ||

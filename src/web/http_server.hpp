@@ -1,6 +1,8 @@
 #pragma once
 // 最小 HTTP/1.1 服务器（对应 Rust web/ 的 axum 替代）
-// socket + accept + 每连接一线程（目标并发 ≤8），路由表支持路径参数
+// socket + accept + 每连接一线程（并发上限 32，超限直接拒绝），
+// 路由表支持路径参数；请求体上限 8MB；socket 读超时回收僵死连接
+#include <atomic>
 #include <functional>
 #include <map>
 #include <string>
@@ -61,6 +63,7 @@ private:
   std::vector<RouteEntry> routes_;
   std::function<void(int fd, const HttpRequest&)> ws_handler_;
   bool running_ = false;
+  std::atomic<int> active_conns_{0};  // D6：当前活跃连接数（上限 32）
 };
 
 }  // namespace da

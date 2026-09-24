@@ -13,6 +13,8 @@ struct ModelConfig {
   std::string api_url;   // 完整 chat completions URL
   std::string api_key;   // ${VAR} 已展开
   std::string model;     // 模型 ID
+  int max_output_tokens = 0;  // D2：单次响应输出上限（发 API；0 = provider 自决）
+  double temperature = -1;    // D2：<0 = 不传，provider 自决
 };
 
 struct AppConfig {

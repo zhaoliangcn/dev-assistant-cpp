@@ -61,9 +61,17 @@ bool App::init(const std::string& config_path) {
   ::mkdir(sd.substr(0, sd.find_last_of('/')).c_str(), 0700);
   ::mkdir(sd.c_str(), 0700);
 
-  // session_start 钩子
+  // session_start 钩子（D5：检查返回值——blocking 钩子否决时明确告警，
+  // 不再静默丢弃语义）
   std::string out;
-  hooks_.fire(HookEvent::SessionStart, security_.workspace(), out);
+  if (!hooks_.fire(HookEvent::SessionStart, security_.workspace(), out)) {
+    std::fprintf(stderr,
+                 "⚠️  session_start 钩子被 blocking 钩子否决（会话继续，"
+                 "但钩子输出可能指示环境异常）\n");
+    if (!out.empty()) std::fprintf(stderr, "%s", out.c_str());
+  } else if (!out.empty()) {
+    std::fputs(out.c_str(), stderr);
+  }
   return true;
 }
 
@@ -77,6 +85,8 @@ int App::process_message(const std::string& input) {
   if (!agent_) {
     agent_ = std::make_unique<Agent>(llm_, tools_, security_, approval_);
     agent_->set_context_budget((size_t)max_tokens_);  // B1：压缩阈值=上下文预算
+    // C6：max_turns 配置接入（此前配置项被解析但从未生效）
+    agent_->set_max_turns(llm_.config().max_turns);
   }
   // --resume 重建的历史（B3）：仅在首次注入
   if (!resumed_history_.empty()) {

@@ -1,6 +1,9 @@
 #include "agent/agent.hpp"
 
+#include <sys/stat.h>
+
 #include <cstdio>
+#include <ctime>
 
 #include "agent/identity.hpp"
 #include "persist/journal.hpp"
@@ -16,6 +19,32 @@ static ToolContext make_ctx(SecurityPolicy& sec) {
   ctx.workspace = sec.workspace();
   return ctx;
 }
+
+namespace {
+// S4：审计日志——每次工具调用（含 --no-approval 放行与各类拒绝）追加
+// <workspace>/.dev-assistant/audit.jsonl（0600）。参数摘要截断并脱敏。
+void audit_tool_call(const SecurityPolicy& sec, const std::string& tool,
+                     const std::string& args_raw, bool allowed,
+                     const std::string& reason) {
+  std::string dir = sec.workspace() + "/.dev-assistant";
+  ::mkdir(dir.c_str(), 0700);  // 已存在时无害
+  nlohmann::json entry{
+      {"ts", (long)std::time(nullptr)},
+      {"tool", tool},
+      {"args", redact_secrets(args_raw.size() > 512
+                                  ? args_raw.substr(0, 512) + "...(截断)"
+                                  : args_raw)},
+      {"decision", allowed ? "allowed" : "denied"}};
+  if (!reason.empty()) entry["reason"] = reason;
+  std::string path = dir + "/audit.jsonl";
+  std::FILE* f = std::fopen(path.c_str(), "a");
+  if (!f) return;
+  ::chmod(path.c_str(), 0600);
+  std::fputs(entry.dump().c_str(), f);
+  std::fputc('\n', f);
+  std::fclose(f);
+}
+}  // namespace
 
 int Agent::run(const std::string& user_input, bool interactive,
                const DeltaCallback& on_delta) {
@@ -39,6 +68,10 @@ int Agent::run(const std::string& user_input, bool interactive,
 bool Agent::step(bool interactive, const DeltaCallback& on_delta) {
   ChatRequest req;
   req.messages = history_;
+  // D2：输出上限/温度来自当前模型配置（0/<0 = provider 自决）
+  const ModelConfig& mc = llm_.config().current_model();
+  req.max_tokens = mc.max_output_tokens;
+  req.temperature = mc.temperature;
   req.tools_json = tools_.to_openai_schema().dump();
 
   LlmResponse resp;
@@ -121,12 +154,14 @@ ToolResult Agent::execute_tool(const ChatMessage::ToolCall& tc,
     std::string prompt = args.value("prompt", "");
     if (prompt.empty()) return {false, "prompt 不能为空"};
 
-    // 受限工具集：按身份默认工具过滤（子代理不给 spawn_subagent，防递归派生）
+    // 受限工具集：按身份默认工具过滤（D1：显式剔除 spawn_subagent，
+    // 防递归派生——不再依赖 Agent 层特判与 registry handler 的隐式双路径）
     Identity role = identity_from_string(args.value("role", "general"));
     ToolRegistry sub_tools;
     for (const auto& name : identity_default_tools(role))
-      if (const ToolDefinition* def = tools_.find(name))
-        sub_tools.register_tool(*def);
+      if (name != "spawn_subagent")
+        if (const ToolDefinition* def = tools_.find(name))
+          sub_tools.register_tool(*def);
 
     Agent child(llm_, sub_tools, security_, approval_);
     child.set_depth(child_depth);
@@ -140,17 +175,29 @@ ToolResult Agent::execute_tool(const ChatMessage::ToolCall& tc,
   }
 
   const ToolDefinition* def = tools_.find(tc.name);
-  if (!def) return {false, "未知工具: " + tc.name};
+  if (!def) {
+    audit_tool_call(security_, tc.name, tc.arguments, false, "未知工具");
+    return {false, "未知工具: " + tc.name};
+  }
 
   // 安全顺序：静态校验 → 危险命令硬拦 → 审批 → 执行（tool_gate 供单测共用）
   nlohmann::json args = nlohmann::json::parse(tc.arguments, nullptr, false);
-  if (args.is_discarded()) return {false, "工具参数 JSON 解析失败"};
+  if (args.is_discarded()) {
+    audit_tool_call(security_, tc.name, tc.arguments, false,
+                    "工具参数 JSON 解析失败");
+    return {false, "工具参数 JSON 解析失败"};
+  }
 
-  if (auto deny = tool_gate(*def, args, security_, approval_, interactive))
+  if (auto deny = tool_gate(*def, args, security_, approval_, interactive)) {
+    audit_tool_call(security_, tc.name, tc.arguments, false, *deny);
     return {false, *deny};
+  }
 
   ToolContext ctx = make_ctx(security_);
   ToolResult r = tools_.dispatch(tc.name, args, ctx);
+  // S4：放行也记录（含 --no-approval 模式——审计不随模式放宽）
+  audit_tool_call(security_, tc.name, tc.arguments, r.ok,
+                  r.ok ? "" : "工具执行失败");
   return r;
 }
 

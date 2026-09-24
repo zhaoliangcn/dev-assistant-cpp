@@ -34,6 +34,9 @@ public:
   // 上下文预算（B1）：--max-tokens 透传为压缩阈值；超限自动压缩历史
   void set_context_budget(size_t tokens) { compressor_.set_threshold(tokens); }
 
+  // C6：单次任务最大迭代轮次（配置 max_turns，默认 40）
+  void set_max_turns(int n) { max_turns_ = n > 0 ? n : 40; }
+
   // 会话日志（B3）：挂载后真写 user/assistant/tool 事件（内容脱敏）；
   // 供 --resume 解析重建历史。不持有所有权。
   void set_journal(Journal* j) { journal_ = j; }

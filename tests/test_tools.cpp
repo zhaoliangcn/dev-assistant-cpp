@@ -116,10 +116,39 @@ static void test_edit_file_replace_all() {
   ::system("rm -rf /tmp/da-edit-test");
 }
 
+static void test_read_symbol_braces_in_strings() {
+  // C1 回归：字符串/注释中的 { } 不再干扰函数边界判定
+  ToolRegistry reg;
+  register_file_tools(reg);
+  ::system("rm -rf /tmp/da-c1-test && mkdir -p /tmp/da-c1-test");
+  da::SecurityPolicy p;
+  p.set_workspace("/tmp/da-c1-test");
+  da::ToolContext ctx{&p, "/tmp/da-c1-test"};
+  std::string path = "/tmp/da-c1-test/demo.cpp";
+  {
+    std::ofstream f(path);
+    f << "std::string demo() {\n"
+      << "  std::string s = \"brace } in string {\";\n"
+      << "  /* comment with } brace { */\n"
+      << "  // line comment }\n"
+      << "  return s + \"}\";\n"
+      << "}\n"
+      << "std::string next_fn() { return \"next\"; }\n";
+  }
+  json args{{"path", path}, {"symbol", "demo"}};
+  auto r = reg.dispatch("read_symbol", args, ctx);
+  EXPECT(r.ok);
+  // 正确边界：demo() 定义应止于第 6 行 "}"，不吞掉 next_fn
+  EXPECT(r.output.find("next_fn") == std::string::npos);
+  EXPECT(r.output.find("return s") != std::string::npos);
+  ::system("rm -rf /tmp/da-c1-test");
+}
+
 int test_tools() {
   test_schema_required_empty_list();
   test_schema_required_missing();
   test_schema_full_registry();
   test_edit_file_replace_all();
+  test_read_symbol_braces_in_strings();
   return g_stats.failed;
 }

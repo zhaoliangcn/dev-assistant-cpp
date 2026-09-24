@@ -77,6 +77,13 @@ bool AppConfig::load(const std::string& path) {
     const TomlValue* v = Toml::get(root, tables, k);
     return (v && v->type == TomlValue::Type::Int) ? (int)v->i : def;
   };
+  auto get_dbl = [&](const std::string& k, double def) -> double {
+    const TomlValue* v = Toml::get(root, tables, k);
+    if (!v) return def;
+    if (v->type == TomlValue::Type::Int) return (double)v->i;
+    if (v->type == TomlValue::Type::Double) return v->d;
+    return def;
+  };
 
   // 单模型（根级）或多模型（[[models]] 简化为 [models] 数组 + 平行键不支持，
   // 这里按 Rust 版约定：根级三键为第一个模型，其余模型放 [model.<name>]）
@@ -86,6 +93,8 @@ bool AppConfig::load(const std::string& path) {
   m0.model = get_str("model");
   m0.name = m0.model;
   m0.provider = get_str("provider");
+  m0.max_output_tokens = get_int("max_output_tokens", 0);
+  m0.temperature = get_dbl("temperature", -1);
   if (!m0.model.empty()) models.push_back(m0);
 
   for (auto& kv : tables) {
@@ -98,10 +107,25 @@ bool AppConfig::load(const std::string& path) {
       auto it = t.find(k);
       return it == t.end() ? "" : it->second.as_string();
     };
+    auto gi = [&](const std::string& k, int def) {
+      auto it = t.find(k);
+      return (it != t.end() && it->second.type == TomlValue::Type::Int)
+                 ? (int)it->second.i
+                 : def;
+    };
+    auto gd = [&](const std::string& k, double def) {
+      auto it = t.find(k);
+      if (it == t.end()) return def;
+      if (it->second.type == TomlValue::Type::Int) return (double)it->second.i;
+      if (it->second.type == TomlValue::Type::Double) return it->second.d;
+      return def;
+    };
     m.api_url = gs("api_url");
     m.api_key = gs("api_key");
     m.model = gs("model");
     m.provider = gs("provider");
+    m.max_output_tokens = gi("max_output_tokens", 0);
+    m.temperature = gd("temperature", -1);
     if (!m.model.empty()) models.push_back(m);
   }
 
@@ -131,12 +155,27 @@ bool AppConfig::load(const std::string& path) {
         auto it = t.find(k);
         return it == t.end() ? "" : it->second.as_string();
       };
+      auto gi = [&](const std::string& k, int def) {
+        auto it = t.find(k);
+        return (it != t.end() && it->second.type == TomlValue::Type::Int)
+                   ? (int)it->second.i
+                   : def;
+      };
+      auto gd = [&](const std::string& k, double def) {
+        auto it = t.find(k);
+        if (it == t.end()) return def;
+        if (it->second.type == TomlValue::Type::Int) return (double)it->second.i;
+        if (it->second.type == TomlValue::Type::Double) return it->second.d;
+        return def;
+      };
       ModelConfig m;
       m.api_url = gs("api_url");
       m.api_key = gs("api_key");
       m.model = gs("model");
       m.name = gs("name");
       m.provider = gs("provider");
+      m.max_output_tokens = gi("max_output_tokens", 0);
+      m.temperature = gd("temperature", -1);
       if (m.name.empty()) m.name = m.model;
       if (!m.model.empty()) models.push_back(m);
     }

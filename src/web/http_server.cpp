@@ -3,6 +3,7 @@
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
+#include <sys/time.h>
 #include <unistd.h>
 
 #include <cstring>
@@ -12,6 +13,12 @@ namespace da {
 
 namespace {
 
+// 读超时（秒）：僵死连接（只建连不发数据 / WS 半途断开）在此时间内
+// 无数据到达即被回收（D7）
+constexpr int kRecvTimeoutSec = 30;
+// 请求体上限（D6）：头部 1MB + body 8MB
+constexpr size_t kMaxBodySize = 8LL * 1024 * 1024;
+
 // 读满直到 \r\n\r\n 的头部，再按 Content-Length 读 body
 bool recv_request(int fd, HttpRequest& req) {
   std::string raw;
@@ -19,7 +26,7 @@ bool recv_request(int fd, HttpRequest& req) {
   size_t header_end = std::string::npos;
   while (header_end == std::string::npos) {
     ssize_t n = ::recv(fd, buf, sizeof buf, 0);
-    if (n <= 0) return false;
+    if (n <= 0) return false;  // 含读超时（EAGAIN → n=-1）
     raw.append(buf, n);
     header_end = raw.find("\r\n\r\n");
     if (raw.size() > 1024 * 1024) return false;  // 头部过大
@@ -72,10 +79,11 @@ bool recv_request(int fd, HttpRequest& req) {
     pos = eol + 2;
   }
 
-  // body
+  // body（D6：超限拒绝，不再无上限读入）
   size_t content_len = 0;
   auto cl = req.headers.find("content-length");
   if (cl != req.headers.end()) content_len = (size_t)std::atol(cl->second.c_str());
+  if (content_len > kMaxBodySize) return false;
   req.body = rest;
   while (req.body.size() < content_len) {
     ssize_t n = ::recv(fd, buf, sizeof buf, 0);
@@ -157,6 +165,10 @@ bool HttpServer::match_route(const std::string& method,
 }
 
 void HttpServer::handle_conn(int fd) {
+  // D7：读超时——僵死连接 30s 无数据即被回收（recv 返回 EAGAIN → n<=0）
+  timeval tv{kRecvTimeoutSec, 0};
+  ::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
+
   HttpRequest req;
   if (recv_request(fd, req)) {
     // WebSocket 升级：交给 ws_handler 长连接处理
@@ -211,8 +223,17 @@ bool HttpServer::serve(const std::string& bind_addr, int port) {
       if (errno == EINTR) continue;
       break;
     }
-    // 每连接一线程（detach；目标并发低）
-    std::thread([this, fd] { handle_conn(fd); }).detach();
+    // D6：并发上限——超限直接关闭（防 fork-bomb 式连接打爆）
+    if (active_conns_.load() >= 32) {
+      ::close(fd);
+      continue;
+    }
+    active_conns_++;
+    // 每连接一线程（detach；并发受 active_conns_ 上限约束）
+    std::thread([this, fd] {
+      handle_conn(fd);
+      active_conns_--;
+    }).detach();
   }
   ::close(listen_fd);
   return true;
