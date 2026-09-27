@@ -2,6 +2,8 @@
 
 #include <nlohmann/json.hpp>
 
+#include <cstdio>
+
 #include "llm/http.hpp"
 
 namespace da {
@@ -102,7 +104,12 @@ LlmResponse OpenAiProvider::chat(const ModelConfig& cfg, const ChatRequest& req,
   if (req.max_tokens > 0) body["max_tokens"] = req.max_tokens;
   if (!req.tools_json.empty()) {
     json tools = json::parse(req.tools_json, nullptr, false);
-    if (!tools.is_discarded() && tools.is_array()) body["tools"] = tools;
+    if (tools.is_array()) {
+      body["tools"] = tools;
+    } else {
+      // 配置错误要可诊断：静默丢弃会让"模型不调用工具"无从排查
+      std::fprintf(stderr, "警告: tools_json 非法或不是数组，已忽略（无工具可用）\n");
+    }
   }
 
   std::map<std::string, std::string> headers{

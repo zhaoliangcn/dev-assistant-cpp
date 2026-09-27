@@ -42,12 +42,22 @@ std::optional<std::string> tool_gate(const ToolDefinition& def,
              "（如需放行请用 --no-approval 启动）";
     std::string detail = args.value("path", args.value("command", ""));
     std::string target = def.name;
+    std::string title;
     if (def.name == "exec_command") {
-      target = "exec:" + args.value("command", "");
+      // command 缺失/非字符串/为空 → 不得生成 "exec:" 前缀授权（会放行任意命令），
+      // 退回工具名，授权只匹配 exec_command 自身（has_grant 前缀 + 边界，等效全拒）
+      const auto c = args.find("command");
+      std::string cmd =
+          (c != args.end() && c->is_string()) ? c->get<std::string>() : "";
+      if (cmd.empty()) return "exec_command 缺少 command 参数";
+      target = "exec:" + cmd;
+      title = "允许本会话所有 " + cmd + " 命令？";
     } else if (!detail.empty()) {
       target += ":";
+      title = "允许本会话所有 " + def.name + " 调用？";
+    } else {
+      title = def.name;
     }
-    std::string title = def.name + ": " + detail;
     if (!approval.request(title, ApprovalScope::Tool, target))
       return "用户拒绝执行";
   }
