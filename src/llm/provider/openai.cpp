@@ -100,7 +100,10 @@ LlmResponse OpenAiProvider::chat(const ModelConfig& cfg, const ChatRequest& req,
   body["stream"] = true;
   if (req.temperature >= 0) body["temperature"] = req.temperature;
   if (req.max_tokens > 0) body["max_tokens"] = req.max_tokens;
-  if (!req.tools_json.empty()) body["tools"] = json::parse(req.tools_json);
+  if (!req.tools_json.empty()) {
+    json tools = json::parse(req.tools_json, nullptr, false);
+    if (!tools.is_discarded() && tools.is_array()) body["tools"] = tools;
+  }
 
   std::map<std::string, std::string> headers{
       {"Content-Type", "application/json"}};

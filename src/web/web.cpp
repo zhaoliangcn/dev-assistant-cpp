@@ -148,8 +148,9 @@ int run_web(App& app, int port) {
   // 消息接口：POST /api/message {message: "..."} → 同步执行一轮并返回全文
   server.route("POST", "/api/message", [&app](const HttpRequest& req) {
     json body = json::parse(req.body, nullptr, false);
-    if (body.is_discarded() || !body.contains("message"))
-      return json_response({{"error", "需要 message 字段"}}, 400);
+    if (body.is_discarded() || !body.contains("message") ||
+        !body["message"].is_string())
+      return json_response({{"error", "需要 message 字段（字符串）"}}, 400);
     std::string msg = body["message"].get<std::string>();
 
     // Web 模式：复用 Agent，非交互；结果以 JSON 返回（流式走 /ws）
