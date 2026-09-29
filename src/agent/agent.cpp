@@ -33,8 +33,8 @@ void audit_tool_call(const SecurityPolicy& sec, const std::string& tool,
       {"ts", (long)std::time(nullptr)},
       {"tool", tool},
       {"args", redact_secrets(args_raw.size() > 512
-                                  ? args_raw.substr(0, 512) + "...(截断)"
-                                  : args_raw)},
+                                  ? truncate_utf8(sanitize_utf8(args_raw), 512) + "...(截断)"
+                                  : sanitize_utf8(args_raw))},
       {"decision", allowed ? "allowed" : "denied"}};
   if (!reason.empty()) entry["reason"] = reason;
   std::string path = dir + "/audit.jsonl";

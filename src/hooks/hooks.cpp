@@ -1,4 +1,5 @@
 #include "hooks/hooks.hpp"
+#include "utils/utf8.hpp"
 
 #include <sys/wait.h>
 #include <unistd.h>
@@ -57,7 +58,8 @@ ExecOutcome run_shell(const std::string& cmd, int timeout_sec,
     ssize_t n = ::read(pipefd[0], buf, sizeof buf);
     if (n > 0) {
       out.output.append(buf, n);
-      if (out.output.size() > 128 * 1024) out.output.resize(128 * 1024);
+      if (out.output.size() > 128 * 1024)
+      out.output = da::truncate_utf8(out.output, 128 * 1024);
     } else if (n == 0) {
       break;
     } else {

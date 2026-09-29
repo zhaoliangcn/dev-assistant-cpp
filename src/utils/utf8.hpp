@@ -56,4 +56,39 @@ inline std::string sanitize_utf8(const std::string& in) {
   return out;
 }
 
+// Cut to at most `limit` bytes without splitting a UTF-8 sequence. A raw
+// substr()/resize() at an arbitrary byte offset can land in the middle of a
+// multi-byte character, and the resulting fragment is not merely ugly: it is
+// not representable in JSON, so nlohmann's dump() throws type_error.316 even
+// in non-strict mode. Always truncate through this helper.
+inline std::string truncate_utf8(const std::string& in, std::size_t limit) {
+  if (in.size() <= limit) return in;
+
+  // Find the last complete character that ends at or before `limit`.
+  std::size_t i = 0;
+  std::size_t last_good = 0;  // byte offset just past the last whole character
+  while (i < in.size()) {
+    const unsigned char c = static_cast<unsigned char>(in[i]);
+    std::size_t need = 1;
+    if ((c & 0xE0) == 0xC0) need = 2;
+    else if ((c & 0xF0) == 0xE0) need = 3;
+    else if ((c & 0xF8) == 0xF0) need = 4;
+
+    // The whole character must fit within the limit.
+    if (i + need > in.size() || i + need > limit) break;
+
+    // Continuation bytes must be well formed.
+    bool ok = true;
+    for (std::size_t k = 1; k < need; ++k) {
+      if ((static_cast<unsigned char>(in[i + k]) & 0xC0) != 0x80) { ok = false; break; }
+    }
+    if (!ok) break;
+
+    i += need;
+    last_good = i;
+  }
+  return in.substr(0, last_good);
+}
+
+
 }  // namespace da

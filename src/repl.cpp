@@ -1,4 +1,5 @@
 #include "repl.hpp"
+#include "utils/utf8.hpp"
 
 #include <fcntl.h>
 #include <sys/wait.h>
@@ -134,7 +135,7 @@ static bool handle_slash(const std::string& line, App& app) {
                                                    : "📝 未知";
       std::string c = msgs[i].content;
       if (c.size() > 120) {
-        c.resize(120);
+        c = da::truncate_utf8(c, 120);
         std::printf("  #%zu %s: %s...\n", i + 1, icon, c.c_str());
       } else {
         std::printf("  #%zu %s: %s\n", i + 1, icon, c.c_str());

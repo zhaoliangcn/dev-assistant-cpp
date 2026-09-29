@@ -1,4 +1,5 @@
 #include "agent/pipeline.hpp"
+#include "utils/utf8.hpp"
 
 namespace da {
 
@@ -75,7 +76,7 @@ bool Pipeline::run(const std::string& objective, StageRunner runner,
         for (const auto& o : out)
           summary += std::string("- [") + pipeline_stage_name(o.stage) + "] " +
                      (o.ok ? "通过" : "未通过") + ": " +
-                     o.output.substr(0, 200) + "\n";
+                     truncate_utf8(o.output, 200) + "\n";
         prompt = "目标: " + objective +
                  "\n各阶段产出摘要如下:\n" + summary +
                  "\n请生成任务完成报告：做了什么、改动清单、遗留风险。";

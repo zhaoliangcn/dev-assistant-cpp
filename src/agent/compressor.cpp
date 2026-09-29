@@ -1,4 +1,5 @@
 #include "agent/compressor.hpp"
+#include "utils/utf8.hpp"
 
 #include "agent/token_counter.hpp"
 
@@ -44,7 +45,8 @@ bool Compressor::maybe_compress(std::vector<ChatMessage>& history) {
     std::string first_line = m.content;
     size_t nl = first_line.find('\n');
     if (nl != std::string::npos) first_line = first_line.substr(0, nl);
-    if (first_line.size() > 120) first_line = first_line.substr(0, 120) + "…";
+    if (first_line.size() > 120)
+    first_line = truncate_utf8(first_line, 120) + "...";
     summary += "- " + m.role + ": " + first_line + "\n";
   }
 
