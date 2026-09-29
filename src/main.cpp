@@ -6,6 +6,8 @@
 #include <vector>
 #include <unistd.h>
 
+#include <nlohmann/json.hpp>
+
 #include "app.hpp"
 #include "repl.hpp"
 #include "web/web.hpp"
@@ -67,7 +69,10 @@ std::string absolutize(const std::string& p, const std::string& startup_cwd) {
 
 }  // namespace
 
-int main(int argc, char** argv) {
+namespace {
+
+// 实际入口：参数扫描、初始化与模式分派（被 main 的顶层异常兜底包裹）
+int run(int argc, char** argv) {
   // 启动 cwd：--project / --config 相对路径的解析基准
   char cwd_buf[4096];
   std::string startup_cwd = ::getcwd(cwd_buf, sizeof cwd_buf) ? cwd_buf : ".";
@@ -192,4 +197,20 @@ int main(int argc, char** argv) {
   }
   if (!apply_model()) return 1;
   return da::run_repl(app);
+}
+
+}  // namespace
+
+int main(int argc, char** argv) {
+  // 顶层异常兜底：任何遗漏的 JSON 类型错误 / 标准库异常不再裸崩
+  try {
+    return run(argc, argv);
+  } catch (const nlohmann::json::exception& e) {
+    std::fprintf(stderr, "JSON 处理错误: %s\n", e.what());
+  } catch (const std::exception& e) {
+    std::fprintf(stderr, "致命错误: %s\n", e.what());
+  } catch (...) {
+    std::fprintf(stderr, "未知错误\n");
+  }
+  return 1;
 }

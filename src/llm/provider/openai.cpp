@@ -2,6 +2,8 @@
 
 #include <nlohmann/json.hpp>
 
+#include <cstdio>
+
 #include "llm/http.hpp"
 
 namespace da {
@@ -101,10 +103,16 @@ LlmResponse OpenAiProvider::chat(const ModelConfig& cfg, const ChatRequest& req,
   if (req.temperature >= 0) body["temperature"] = req.temperature;
   if (req.max_tokens > 0) body["max_tokens"] = req.max_tokens;
   // Non-throwing form, matching the other providers: a malformed schema must
-  // degrade to "no tools", never abort the process.
+  // degrade to "no tools", never abort the process. Warn as well, because
+  // silently dropping tools leaves the model unable to call them with no
+  // visible cause.
   if (!req.tools_json.empty()) {
     json tools = json::parse(req.tools_json, nullptr, false);
-    if (tools.is_array() && !tools.empty()) body["tools"] = tools;
+    if (tools.is_array()) {
+      if (!tools.empty()) body["tools"] = tools;
+    } else {
+      std::fprintf(stderr, "警告: tools_json 非法或不是数组，已忽略（无工具可用）\n");
+    }
   }
 
   std::map<std::string, std::string> headers{

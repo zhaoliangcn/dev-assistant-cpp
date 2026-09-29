@@ -33,24 +33,31 @@ std::optional<std::string> tool_gate(const ToolDefinition& def,
 
   // 3) 审批（写类 / 执行类）——与 interactive 解耦：
   //    --no-approval 显式放行；交互模式弹询问；非交互且无审批通道默认拒绝。
-  //    审批 target 按工具类型细化（S3）：
-  //    - exec_command → "exec:<command+首参>"（命令签名，防"允许 ls"变"允许任意命令"）
-  //    - 路径类写工具 → "<工具名>:<相对路径>"（防"允许 write_file"变全工具放行）
+  //    审批 target 按工具类型取"前缀粒度"（s = 本会话按前缀放行）：
+  //    - exec_command → "exec:<命令>"（如 exec:git，允许后本会话所有 git 子命令）
+  //    - 路径类写工具 → "<工具名>:"（允许后本会话该工具任意工作区路径）
   if (def.needs_approval && !approval.auto_approve_all()) {
     if (!interactive)
       return "非交互模式无审批通道，已拒绝执行工具: " + def.name +
              "（如需放行请用 --no-approval 启动）";
     std::string detail = args.value("path", args.value("command", ""));
     std::string target = def.name;
+    std::string title;
     if (def.name == "exec_command") {
-      target = "exec:" + args.value("command", "");
-      if (args.contains("args") && args["args"].is_array() &&
-          !args["args"].empty() && args["args"][0].is_string())
-        target += " " + args["args"][0].get<std::string>();
+      // command 缺失/非字符串/为空 → 不得生成 "exec:" 前缀授权（会放行任意命令），
+      // 退回工具名，授权只匹配 exec_command 自身（has_grant 前缀 + 边界，等效全拒）
+      const auto c = args.find("command");
+      std::string cmd =
+          (c != args.end() && c->is_string()) ? c->get<std::string>() : "";
+      if (cmd.empty()) return "exec_command 缺少 command 参数";
+      target = "exec:" + cmd;
+      title = "允许本会话所有 " + cmd + " 命令？";
     } else if (!detail.empty()) {
-      target += ":" + detail;
+      target += ":";
+      title = "允许本会话所有 " + def.name + " 调用？";
+    } else {
+      title = def.name;
     }
-    std::string title = def.name + ": " + detail;
     if (!approval.request(title, ApprovalScope::Tool, target))
       return "用户拒绝执行";
   }
