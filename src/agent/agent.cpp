@@ -8,6 +8,7 @@
 #include "agent/identity.hpp"
 #include "persist/journal.hpp"
 #include "prompt.hpp"
+#include "utils/utf8.hpp"
 #include "tools/file_tools.hpp"
 #include "tools/subagent.hpp"
 
@@ -50,12 +51,13 @@ int Agent::run(const std::string& user_input, bool interactive,
                const DeltaCallback& on_delta) {
   // start_turn：system prompt + 用户消息
   if (history_.empty())
-    history_.push_back({"system", build_system_prompt(nullptr), "", {}});
-  history_.push_back({"user", user_input, "", {}});
+    history_.push_back(
+        {"system", sanitize_utf8(build_system_prompt(nullptr)), "", {}});
+  history_.push_back({"user", sanitize_utf8(user_input), "", {}});
   // B3：真写用户消息（脱敏后落盘，供 --resume 重建）
   if (journal_)
     journal_->append("user_message",
-                     {{"content", redact_secrets(user_input)}});
+                     {{"content", sanitize_utf8(redact_secrets(user_input))}});
 
   // loop step：直到无 tool_calls 或超轮次
   for (int turn = 0; turn < max_turns_; turn++) {
@@ -113,31 +115,32 @@ bool Agent::step(bool interactive, const DeltaCallback& on_delta) {
 
   // 无工具调用 → 本轮结束
   if (resp.tool_calls.empty()) {
-    history_.push_back({"assistant", resp.content, "", {}});
+    history_.push_back({"assistant", sanitize_utf8(resp.content), "", {}});
     if (journal_)
       journal_->append("assistant_message",
-                       {{"content", redact_secrets(resp.content)}});
+                       {{"content", sanitize_utf8(redact_secrets(resp.content))}});
     return false;
   }
 
   // 有工具调用：先入 assistant 消息（含 tool_calls），逐个执行
-  history_.push_back({"assistant", resp.content, "", resp.tool_calls});
+  history_.push_back({"assistant", sanitize_utf8(resp.content), "",
+                       resp.tool_calls});
   if (journal_) {
     nlohmann::json tcs = nlohmann::json::array();
     for (auto& tc : resp.tool_calls)
       tcs.push_back({{"id", tc.id}, {"name", tc.name},
                      {"arguments", tc.arguments}});
     journal_->append("assistant_message",
-                     {{"content", redact_secrets(resp.content)},
+                     {{"content", sanitize_utf8(redact_secrets(resp.content))},
                       {"tool_calls", tcs}});
   }
   for (auto& tc : resp.tool_calls) {
     ToolResult r = execute_tool(tc, interactive);
-    history_.push_back({"tool", r.output, tc.id, {}});
+    history_.push_back({"tool", sanitize_utf8(r.output), tc.id, {}});
     if (journal_)
       journal_->append("tool_result", {{"tool", tc.name},
                                        {"tool_call_id", tc.id},
-                                       {"content", redact_secrets(r.output)}});
+                             {"content", sanitize_utf8(redact_secrets(r.output))}});
   }
   return true;  // 继续下一 step（让模型消化工具结果）
 }
