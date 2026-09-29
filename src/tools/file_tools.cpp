@@ -12,6 +12,7 @@
 
 #include "utils/atomic_write.hpp"
 #include "utils/gitignore.hpp"
+#include "utils/utf8.hpp"
 
 namespace da {
 
@@ -41,25 +42,70 @@ std::string resolve_path(ToolContext& ctx, const std::string& p) {
   return ctx.workspace + "/" + p;
 }
 
+// C8: shared large-file guard. Reads through an open fd and checks the size with
+// fstat() on that same fd, so the file cannot be replaced or grown between the
+// check and the read. The previous stat(path) + ifstream form was racy: it
+// measured one file and then read a possibly different one.
+static bool read_capped(const std::string& path, size_t cap, std::string& out,
+                        std::string& err) {
+  int fd = ::open(path.c_str(), O_RDONLY | O_CLOEXEC);
+  if (fd < 0) { err = "无法读取文件: " + path; return false; }
+  struct stat st;
+  if (::fstat(fd, &st) != 0) {
+    ::close(fd);
+    err = "无法读取文件: " + path;
+    return false;
+  }
+  // 只读普通文件：FIFO/设备/procfs 上 read() 可能永久阻塞，且 st_size 不可信
+  // （validate_path 只拒 symlink，不拒 FIFO），直接拒绝。
+  if (!S_ISREG(st.st_mode)) {
+    ::close(fd);
+    err = "仅支持普通文件: " + path;
+    return false;
+  }
+  const std::string cap_msg =
+      "文件过大（>" + std::to_string(cap) + "B），拒绝读取: " + path;
+  if (st.st_size > static_cast<off_t>(cap)) {
+    ::close(fd);
+    err = cap_msg;
+    return false;
+  }
+  out.clear();
+  out.reserve(static_cast<size_t>(st.st_size));
+  char buf[65536];
+  ssize_t n = 0;
+  while ((n = ::read(fd, buf, sizeof buf)) > 0) {
+    out.append(buf, static_cast<size_t>(n));
+    // 兜底：文件在 open 与 read 之间被截断放大（同 inode 写入）时，
+    // fstat 测得的 st_size 可能已过期，按实际读到的字节数再卡一次。
+    if (out.size() > cap) {
+      ::close(fd);
+      err = cap_msg;
+      return false;
+    }
+  }
+  const bool failed = (n < 0);
+  ::close(fd);
+  if (failed) { err = "无法读取文件: " + path; return false; }
+  // Raw file bytes may not be valid UTF-8; dump() would throw on them.
+  // Raw file bytes may not be valid UTF-8; dump() would throw on them.
+  out = sanitize_utf8(out);
+  return true;
+}
+
+static const size_t kMaxReadBytes = 10LL * 1024 * 1024;  // 10MB
+
 ToolResult read_file_tool(const nlohmann::json& args, ToolContext& ctx) {
   std::string path = resolve_path(ctx, arg_str(args, "path"));
+  std::string read_err;
   std::string reason;
   if (!ctx.security->validate_path(path, PathCheck::ReadOnly, reason))
     return {false, "路径被拒绝: " + reason};
 
-  // C8：大文件防护——超限直接拒绝（默认 10MB），避免 rdbuf() 一次性读入撑爆内存
-  {
-    struct stat st;
-    if (::stat(path.c_str(), &st) == 0 && S_ISREG(st.st_mode) &&
-        st.st_size > 10LL * 1024 * 1024)
-      return {false, "文件过大（>10MB），拒绝读取: " + path};
-  }
 
-  std::ifstream f(path, std::ios::binary);
-  if (!f) return {false, "无法读取文件: " + path};
-  std::ostringstream ss;
-  ss << f.rdbuf();
-  std::string content = ss.str();
+  std::string content;
+  if (!read_capped(path, kMaxReadBytes, content, read_err))
+    return {false, read_err};
 
   long offset = arg_long(args, "offset", 0);
   long limit = arg_long(args, "limit", 2000);
@@ -130,17 +176,16 @@ size_t find_code_block_end(const std::vector<std::string>& lines,
 
 ToolResult read_symbol_tool(const nlohmann::json& args, ToolContext& ctx) {
   std::string path = resolve_path(ctx, arg_str(args, "path"));
+  std::string read_err;
   std::string symbol = arg_str(args, "symbol");
   if (symbol.empty()) return {false, "symbol 不能为空"};
   std::string reason;
   if (!ctx.security->validate_path(path, PathCheck::ReadOnly, reason))
     return {false, "路径被拒绝: " + reason};
 
-  std::ifstream f(path, std::ios::binary);
-  if (!f) return {false, "无法读取文件: " + path};
-  std::ostringstream ss;
-  ss << f.rdbuf();
-  std::string content = ss.str();
+  std::string content;
+  if (!read_capped(path, kMaxReadBytes, content, read_err))
+    return {false, read_err};
 
   // 轻量符号定位（零依赖，对齐 Rust tree-sitter 版的语义：返回该符号定义起的
   // 完整片段）。启发式：定义行 = 含符号名且带声明关键字；结束 = 顶层缩进回归。
@@ -210,6 +255,7 @@ ToolResult write_file_tool(const nlohmann::json& args, ToolContext& ctx) {
 
 ToolResult edit_file_tool(const nlohmann::json& args, ToolContext& ctx) {
   std::string path = resolve_path(ctx, arg_str(args, "path"));
+  std::string read_err;
   std::string old_s = arg_str(args, "old_string");
   std::string new_s = arg_str(args, "new_string");
   std::string reason;
@@ -219,11 +265,9 @@ ToolResult edit_file_tool(const nlohmann::json& args, ToolContext& ctx) {
     return {false, "拒绝编辑敏感文件: " + path};
   if (old_s.empty()) return {false, "old_string 不能为空"};
 
-  std::ifstream f(path, std::ios::binary);
-  if (!f) return {false, "无法打开文件: " + path};
-  std::ostringstream ss;
-  ss << f.rdbuf();
-  std::string content = ss.str();
+  std::string content;
+  if (!read_capped(path, kMaxReadBytes, content, read_err))
+    return {false, read_err};
 
   bool replace_all = args.value("replace_all", false);
   size_t count = 0;
@@ -292,6 +336,13 @@ ToolResult glob_tool(const nlohmann::json& args, ToolContext& ctx) {
     fname = pattern.substr(slash + 1);
     if (fname == "**") { fname = "*"; dir_prefix = pattern; }
   }
+  // 路径校验：目录前缀须在 workspace 内（防 ../../etc 越界）
+  if (dir_prefix != "." && !dir_prefix.empty()) {
+    std::string reason;
+    std::string abs = dir_prefix[0] == '/' ? dir_prefix : ctx.workspace + "/" + dir_prefix;
+    if (!ctx.security->validate_path(abs, PathCheck::ReadOnly, reason))
+      return {false, "路径被拒绝: " + reason};
+  }
 
   GitignoreMatcher gi;
   std::vector<std::string> files;
@@ -317,7 +368,7 @@ ToolResult glob_tool(const nlohmann::json& args, ToolContext& ctx) {
       if (--limit <= 0) break;
     }
   }
-  return {true, arr.dump()};
+  return {true, arr.dump(-1, ' ', false)};
 }
 
 ToolResult grep_tool(const nlohmann::json& args, ToolContext& ctx) {
@@ -348,7 +399,8 @@ ToolResult grep_tool(const nlohmann::json& args, ToolContext& ctx) {
     while (std::getline(in, line) && hits < max_results) {
       lineno++;
       if (line.find(needle) != std::string::npos) {
-        results.push_back({{"file", f}, {"line", lineno}, {"text", line}});
+        results.push_back(
+            {{"file", sanitize_utf8(f)}, {"line", lineno}, {"text", sanitize_utf8(line)}});
         hits++;
       }
     }
@@ -357,7 +409,7 @@ ToolResult grep_tool(const nlohmann::json& args, ToolContext& ctx) {
   nlohmann::json out;
   out["matches"] = results;
   out["total"] = hits;
-  return {true, out.dump()};
+  return {true, out.dump(-1, ' ', false)};
 }
 
 }  // namespace

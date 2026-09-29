@@ -30,7 +30,10 @@ void Journal::append(const std::string& type, const nlohmann::json& payload) {
   std::strftime(ts, sizeof ts, "%Y-%m-%dT%H:%M:%S", std::localtime(&t));
   nlohmann::json entry{{"ts", ts}, {"type", type}};
   if (payload.is_object()) entry.update(payload);  // nlohmann 转义，防畸形 JSONL
-  file_ << entry.dump() << "\n";
+  // error_handler=false: never throw on a tool result that holds raw file
+  // bytes. Nothing above this point catches exceptions, so a throw here
+  // killed the process via std::terminate (reproduced: type_error.316).
+  file_ << entry.dump(-1, ' ', false) << "\n";
   file_.flush();
 }
 

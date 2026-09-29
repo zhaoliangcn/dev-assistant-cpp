@@ -66,7 +66,7 @@ void Orchestrator::save_checkpoint(const std::string& dir) const {
                    {"retries_left", t.retries_left},
                    {"result", t.result}});
   }
-  atomic_write(dir + "/tasks.json", arr.dump());
+  atomic_write(dir + "/tasks.json", arr.dump(-1, ' ', false));
 }
 
 bool Orchestrator::restore(const std::string& checkpoint_json,

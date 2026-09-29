@@ -8,7 +8,12 @@ if(NOT CMAKE_BUILD_TYPE)
   set(CMAKE_BUILD_TYPE Release)
 endif()
 
-add_compile_options(-Os)
+string(TOUPPER "${CMAKE_BUILD_TYPE}" DA_BT)
+if(DA_BT STREQUAL "DEBUG")
+  add_compile_options(-O0 -g)
+else()
+  add_compile_options(-Os)
+endif()
 
 find_package(CURL)      # 可选：缺失则 NO_CURL，走内置客户端
 find_package(OpenSSL)   # 可选

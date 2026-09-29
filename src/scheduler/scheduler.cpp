@@ -154,7 +154,7 @@ bool Scheduler::save(const std::string& path) const {
                    {"prompt", t.prompt},
                    {"enabled", t.enabled}});
   }
-  auto st = atomic_write(path, arr.dump());
+  auto st = atomic_write(path, arr.dump(-1, ' ', false));
   return st.ok();
 }
 
@@ -280,7 +280,7 @@ void Scheduler::execute_shell(const ScheduledTask& t, const std::string& log_pat
              {"output", out}};
   std::FILE* lf = std::fopen(log_path.c_str(), "a");
   if (lf) {
-    std::fputs(entry.dump().c_str(), lf);
+    std::fputs(entry.dump(-1, ' ', false).c_str(), lf);
     std::fputc('\n', lf);
     std::fclose(lf);
   }

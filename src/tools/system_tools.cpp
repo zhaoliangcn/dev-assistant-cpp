@@ -1,4 +1,5 @@
 #include "tools/system_tools.hpp"
+#include "utils/utf8.hpp"
 
 #include <dirent.h>
 #include <fcntl.h>
@@ -49,7 +50,12 @@ ToolResult exec_command_tool(const nlohmann::json& args, ToolContext& ctx) {
   if (::pipe(out_pipe) != 0) return {false, "pipe 创建失败"};
 
   pid_t pid = ::fork();
-  if (pid < 0) return {false, "fork 失败"};
+  if (pid < 0) {
+    // fork failed: both pipe fds would otherwise leak for the process lifetime
+    ::close(out_pipe[0]);
+    ::close(out_pipe[1]);
+    return {false, "fork 失败"};
+  }
   if (pid == 0) {
     // 子进程：建立进程组、重定向 stdout/stderr、执行
     ::setpgid(0, 0);
@@ -58,7 +64,8 @@ ToolResult exec_command_tool(const nlohmann::json& args, ToolContext& ctx) {
     ::dup2(out_pipe[1], STDERR_FILENO);
     ::close(out_pipe[1]);
     std::string ws = ctx.security->workspace();
-    if (!ws.empty()) ::chdir(ws.c_str());
+    // chdir failure must abort: otherwise the command runs outside the workspace
+    if (!ws.empty() && ::chdir(ws.c_str()) != 0) ::_exit(126);
     std::vector<char*> cargv;
     cargv.push_back(const_cast<char*>(program.c_str()));
     for (auto& a : argv) cargv.push_back(const_cast<char*>(a.c_str()));
@@ -76,51 +83,75 @@ ToolResult exec_command_tool(const nlohmann::json& args, ToolContext& ctx) {
   fcntl(out_pipe[0], F_SETFL, O_NONBLOCK);
   auto deadline = std::chrono::steady_clock::now() +
                   std::chrono::seconds(timeout_sec);
+  const size_t kMaxOut = 256 * 1024;
   bool timed_out = false;
+  bool truncated = false;
+  bool reaped = false;
   while (true) {
+    // The deadline must be tested on every pass. It used to sit only inside the
+    // EAGAIN branch, so a child that dribbled output never tripped the timeout.
+    if (std::chrono::steady_clock::now() > deadline) { timed_out = true; break; }
     ssize_t n = ::read(out_pipe[0], buf, sizeof buf);
     if (n > 0) {
+      if (output.size() + static_cast<size_t>(n) > kMaxOut) {
+        output.append(buf, kMaxOut - output.size());
+        truncated = true;
+        break;
+      }
       output.append(buf, n);
-      if (output.size() > 256 * 1024) { output.resize(256 * 1024); break; }
     } else if (n == 0) {
       break;  // EOF
     } else {
       if (errno != EAGAIN && errno != EINTR) break;
-      // 非阻塞轮询 + 超时检查
-      if (std::chrono::steady_clock::now() > deadline) {
-        timed_out = true;
-        ::kill(-pid, SIGKILL);
-        break;
-      }
       std::this_thread::sleep_for(std::chrono::milliseconds(20));
-      // 检查子进程是否退出
-      int status;
-      pid_t r = ::waitpid(pid, &status, WNOHANG);
-      if (r == pid) {
-        // 排空管道
-        while ((n = ::read(out_pipe[0], buf, sizeof buf)) > 0)
+      // poll for child exit
+      int st2 = 0;
+      if (::waitpid(pid, &st2, WNOHANG) == pid) {
+        reaped = true;
+        // drain the pipe
+        while ((n = ::read(out_pipe[0], buf, sizeof buf)) > 0) {
+          if (output.size() + static_cast<size_t>(n) > kMaxOut) {
+            truncated = true;
+            break;
+          }
           output.append(buf, n);
+        }
         break;
       }
     }
   }
   ::close(out_pipe[0]);
 
+  // Reap the child. On timeout or truncation the process group is killed first:
+  // a plain blocking waitpid() would otherwise hang here until the child exited
+  // on its own, which silently bypassed the timeout.
   int status = 0;
-  if (!timed_out) ::waitpid(pid, &status, 0);
-  if (timed_out) {
-    ::waitpid(pid, &status, 0);
+  if (timed_out || truncated) {
+    // Kill the whole group, then the child itself. The direct kill matters: a
+    // group signal alone can miss if the child has not settled into its own
+    // process group yet, and the blocking waitpid() below would then hang for
+    // as long as the child lives, silently defeating the timeout.
+    ::kill(-pid, SIGKILL);
+    ::kill(pid, SIGKILL);
+  }
+  if (!reaped) ::waitpid(pid, &status, 0);
+
+  if (timed_out)
     return {false, "命令超时（" + std::to_string(timeout_sec) +
                        "s）已终止进程组\n" + output};
-  }
   int exit_code = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
-  std::string head = exit_code == 0 ? "" : "exit=" + std::to_string(exit_code) + "\n";
+  std::string head;
+  if (truncated) head = "[output truncated at 256KB]\n";
+  if (exit_code != 0) head += "exit=" + std::to_string(exit_code) + "\n";
   return {exit_code == 0, head + output};
 }
 
 ToolResult list_dir_tool(const nlohmann::json& args, ToolContext& ctx) {
   std::string path = arg_str(args, "path", ".");
   if (path[0] != '/') path = ctx.workspace + "/" + path;
+  std::string reason;
+  if (!ctx.security->validate_path(path, PathCheck::ReadOnly, reason))
+    return {false, "路径被拒绝: " + reason};
   DIR* d = ::opendir(path.c_str());
   if (!d) return {false, "无法打开目录: " + path};
   nlohmann::json entries = nlohmann::json::array();
@@ -134,10 +165,10 @@ ToolResult list_dir_tool(const nlohmann::json& args, ToolContext& ctx) {
                            ? (S_ISDIR(st.st_mode) ? "dir"
                               : S_ISLNK(st.st_mode) ? "link" : "file")
                            : "?";
-    entries.push_back({{"name", name}, {"kind", kind}});
+    entries.push_back({{"name", sanitize_utf8(name)}, {"kind", kind}});
   }
   ::closedir(d);
-  return {true, entries.dump()};
+  return {true, entries.dump(-1, ' ', false)};
 }
 
 }  // namespace
@@ -165,6 +196,7 @@ void register_system_tools(ToolRegistry& reg) {
     t.parameters = {{"type", "object"},
                     {"properties", {{"path", {{"type", "string"}}}}},
                     {"required", {}}};
+    t.path_check = PathCheck::ReadOnly;
     t.handler = list_dir_tool;
     reg.register_tool(std::move(t));
   }

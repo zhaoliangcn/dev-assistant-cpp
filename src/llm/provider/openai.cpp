@@ -133,7 +133,7 @@ LlmResponse OpenAiProvider::chat(const ModelConfig& cfg, const ChatRequest& req,
   // api_url 兼容两种写法：完整 chat/completions 地址，或基础地址（自动补全）
   std::string url = normalize_chat_url(cfg.api_url);
 
-  auto [status, err] = http_post(url, headers, body.dump(), 120, on_line);
+  auto [status, err] = http_post(url, headers, body.dump(-1, ' ', false), 120, on_line);
   if (status == -1 || status < 200 || status >= 300) {
     LlmResponse fail;
     fail.finish_reason = http_error_reason(status, err);

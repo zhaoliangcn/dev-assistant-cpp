@@ -82,7 +82,7 @@ LlmResponse OllamaProvider::chat(const ModelConfig& cfg, const ChatRequest& req,
   };
 
   std::string url = normalize_ollama_url(cfg.api_url);
-  auto [status, err] = http_post(url, headers, body.dump(), 120, on_line);
+  auto [status, err] = http_post(url, headers, body.dump(-1, ' ', false), 120, on_line);
   if (status == -1 || status < 200 || status >= 300) {
     LlmResponse fail;
     fail.finish_reason = "http_error: " +

@@ -40,7 +40,7 @@ void audit_tool_call(const SecurityPolicy& sec, const std::string& tool,
   std::FILE* f = std::fopen(path.c_str(), "a");
   if (!f) return;
   ::chmod(path.c_str(), 0600);
-  std::fputs(entry.dump().c_str(), f);
+  std::fputs(entry.dump(-1, ' ', false).c_str(), f);
   std::fputc('\n', f);
   std::fclose(f);
 }
