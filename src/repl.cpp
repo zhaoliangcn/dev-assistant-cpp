@@ -303,7 +303,9 @@ static bool handle_slash(const std::string& line, App& app) {
       std::fputs("  输入编号切换（直接回车取消）: ", stdout);
       std::fflush(stdout);
       std::string choice;
-      if (!std::getline(std::cin, choice) || choice.empty()) {  // EOF 或空回车
+      if (!std::getline(std::cin, choice)) choice.clear();
+    if (!choice.empty() && choice.back() == '\r') choice.pop_back();
+    if (choice.empty()) {  // EOF 或空回车
         std::printf("ℹ️ 已取消切换\n");
         return false;
       }
@@ -368,9 +370,19 @@ int run_repl(App& app) {
     std::fputs("> ", stdout);
     std::fflush(stdout);
     if (!std::getline(std::cin, line)) break;
+    // A CRLF terminal leaves a trailing '\r' in the line, which broke every
+    // exact-match command (/history, /exit, /status, ...). Strip it here, once,
+    // at the single point where input enters.
+    if (!line.empty() && line.back() == '\r') line.pop_back();
     if (line.empty()) continue;
     if (line[0] == '/') {
-      if (handle_slash(line, app)) break;
+      // 去行尾空白/CR 再分发：/history 等精确匹配命令容忍尾随空格
+      // （IME/粘贴/回车换行带入，避免 "未知命令: /history " 误报）
+      std::string cmd = line;
+      while (!cmd.empty() && (cmd.back() == ' ' || cmd.back() == '\t' ||
+                              cmd.back() == '\r'))
+        cmd.pop_back();
+      if (handle_slash(cmd, app)) break;
       continue;
     }
     app.process_message(line);
