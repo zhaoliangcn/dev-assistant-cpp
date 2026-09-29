@@ -135,7 +135,19 @@ bool Agent::step(bool interactive, const DeltaCallback& on_delta) {
                       {"tool_calls", tcs}});
   }
   for (auto& tc : resp.tool_calls) {
+    // Surface the call before running it, so a slow or hanging tool is
+    // visibly in progress rather than looking like a stall.
+    if (tool_listener_) {
+      std::string shown = sanitize_utf8(redact_secrets(tc.arguments));
+      if (shown.size() > 200) { shown.resize(200); shown += "..."; }
+      tool_listener_("call", tc.name, shown, "", true);
+    }
     ToolResult r = execute_tool(tc, interactive);
+    if (tool_listener_) {
+      std::string brief = sanitize_utf8(r.output);
+      if (brief.size() > 200) { brief.resize(200); brief += "..."; }
+      tool_listener_("result", tc.name, "", brief, r.ok);
+    }
     history_.push_back({"tool", sanitize_utf8(r.output), tc.id, {}});
     if (journal_)
       journal_->append("tool_result", {{"tool", tc.name},

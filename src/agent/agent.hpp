@@ -1,5 +1,6 @@
 #pragma once
 // Agent 主循环（对应 Rust agent/mod.rs 的 start_turn/step/run）
+#include <functional>
 #include <optional>
 #include <string>
 #include <vector>
@@ -41,6 +42,16 @@ public:
   // 供 --resume 解析重建历史。不持有所有权。
   void set_journal(Journal* j) { journal_ = j; }
 
+  // Tool execution events, for UI visibility. kind is "call" before the tool
+  // runs and "result" after. args and output are already redacted and
+  // truncated. The CLI prints them; the web UI forwards them over the socket.
+  using ToolEventFn = std::function<void(const char* kind,
+                                        const std::string& name,
+                                        const std::string& args,
+                                        const std::string& output,
+                                        bool ok)>;
+  void set_tool_listener(ToolEventFn fn) { tool_listener_ = std::move(fn); }
+
   // 执行一次完整交互：start_turn → loop step → 结束
   // 返回 0 成功；on_delta 可选：每个 token 增量回调（流式转发给调用方）
   int run(const std::string& user_input, bool interactive,
@@ -59,6 +70,7 @@ private:
   ToolRegistry& tools_;
   SecurityPolicy& security_;
   ApprovalManager& approval_;
+  ToolEventFn tool_listener_;
   std::vector<ChatMessage> history_;
   int max_turns_ = 40;
   int depth_ = 0;  // 子代理深度 ≤3

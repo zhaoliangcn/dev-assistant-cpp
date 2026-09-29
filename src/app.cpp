@@ -96,7 +96,22 @@ int App::process_message(const std::string& input) {
   // B3：挂载会话日志，Agent 内真写 user/assistant/tool 事件（脱敏）
   Journal j;
   if (j.open(last_session_dir_ + "/events.jsonl")) agent_->set_journal(&j);
+  // Show tool activity: without this the CLI stays silent through the whole
+  // tool phase, so a slow or hung tool looks exactly like a stalled model.
+  agent_->set_tool_listener([](const char* kind, const std::string& name,
+                               const std::string& args,
+                               const std::string& output, bool ok) {
+    if (std::string(kind) == "call") {
+      std::fprintf(stderr, "\033[36m| %s\033[0m %s\n", name.c_str(), args.c_str());
+    } else {
+      std::fprintf(stderr, "  %s %s (\033[90m%zu chars\033[0m)\n",
+                   ok ? "\033[32mok\033[0m" : "\033[31mfail\033[0m",
+                   name.c_str(), output.size());
+    }
+    std::fflush(stderr);
+  });
   int rc = agent_->run(input, true);
+  agent_->set_tool_listener(nullptr);
   agent_->set_journal(nullptr);
   j.close();
   last_history_ = agent_->history();  // 供 REPL /history 查看
