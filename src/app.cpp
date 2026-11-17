@@ -187,7 +187,11 @@ bool App::run_pipeline(const std::string& objective) {
                        const std::vector<StageOutput>&) -> ToolResult {
     Agent agent(llm_, tools_, security_, approval_);
     agent.set_depth(1);  // 各阶段以子代理深度运行（受限递归）
+    agent.set_identity(role);  // 阶段身份注入 system prompt
     agent.run(prompt, true);
+    // finish 显式交付优先于历史扫描
+    if (agent.finished() && !agent.final_summary().empty())
+      return {true, agent.final_summary()};
     // B4：返回子代理真实 assistant 文本（供 Reviewer/Tester/Repair 消费），
     // 而非占位字符串——否则流水线各阶段拿到的"上阶段产出"全是空话
     for (auto it = agent.history().rbegin(); it != agent.history().rend(); ++it) {

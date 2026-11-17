@@ -49,10 +49,15 @@ void audit_tool_call(const SecurityPolicy& sec, const std::string& tool,
 
 int Agent::run(const std::string& user_input, bool interactive,
                const DeltaCallback& on_delta) {
+  // 新一轮开始：清空上一轮的 finish 状态
+  finished_ = false;
+  final_summary_.clear();
   // start_turn：system prompt + 用户消息
   if (history_.empty())
-    history_.push_back(
-        {"system", sanitize_utf8(build_system_prompt(nullptr)), "", {}});
+    history_.push_back({"system",
+                        sanitize_utf8(build_system_prompt(nullptr, identity_)),
+                        "",
+                        {}});
   history_.push_back({"user", sanitize_utf8(user_input), "", {}});
   // B3：真写用户消息（脱敏后落盘，供 --resume 重建）
   if (journal_)
@@ -154,11 +159,48 @@ bool Agent::step(bool interactive, const DeltaCallback& on_delta) {
                                        {"tool_call_id", tc.id},
                              {"content", sanitize_utf8(redact_secrets(r.output))}});
   }
-  return true;  // 继续下一 step（让模型消化工具结果）
+  if (!finished_) return true;  // 未 finish：继续下一 step 让模型消化工具结果
+  return false;  // finish 已调用：本轮结束
 }
 
 ToolResult Agent::execute_tool(const ChatMessage::ToolCall& tc,
                                bool interactive) {
+  // finish：显式结束本轮，不再请求模型
+  if (tc.name == "finish") {
+    nlohmann::json args = nlohmann::json::parse(tc.arguments, nullptr, false);
+    final_summary_ = args.is_discarded() ? "" : args.value("summary", "");
+    finished_ = true;
+    if (interactive)
+      std::printf("\n[完成] %s\n",
+                  final_summary_.empty() ? "任务已结束"
+                                         : final_summary_.c_str());
+    if (journal_)
+      journal_->append("turn_finished",
+                       {{"summary", sanitize_utf8(final_summary_)}});
+    return {true, final_summary_.empty() ? "已结束本轮" : final_summary_};
+  }
+
+  // 上下文预算工具：直接操作当前 Agent 的历史，不经 registry 分发
+  if (tc.name == "context_budget") {
+    size_t used = Compressor::history_tokens(history_);
+    return {true, "上下文估算: " + std::to_string(used) + " tokens / 阈值 " +
+                      std::to_string(compressor_.threshold()) + "，消息 " +
+                      std::to_string(history_.size()) + " 条"};
+  }
+  if (tc.name == "compress_context") {
+    bool done = compressor_.force_compress(history_);
+    return {true, done ? "已压缩上下文：早期消息已折叠为摘要"
+                       : "无需压缩：历史过短或没有可压缩的早期消息"};
+  }
+  if (tc.name == "save_summary") {
+    nlohmann::json args = nlohmann::json::parse(tc.arguments, nullptr, false);
+    std::string summary = args.is_discarded() ? "" : args.value("summary", "");
+    if (summary.empty()) return {false, "summary 不能为空"};
+    if (!journal_) return {false, "当前未启用会话日志，无法落盘摘要"};
+    journal_->append("summary", {{"content", sanitize_utf8(summary)}});
+    return {true, "摘要已保存到会话日志"};
+  }
+
   // spawn_subagent 由 Agent 层直接处理：构造受限 registry + 独立上下文
   if (tc.name == "spawn_subagent") {
     nlohmann::json args = nlohmann::json::parse(tc.arguments, nullptr, false);
@@ -169,18 +211,24 @@ ToolResult Agent::execute_tool(const ChatMessage::ToolCall& tc,
     std::string prompt = args.value("prompt", "");
     if (prompt.empty()) return {false, "prompt 不能为空"};
 
-    // 受限工具集：按身份默认工具过滤（D1：显式剔除 spawn_subagent，
-    // 防递归派生——不再依赖 Agent 层特判与 registry handler 的隐式双路径）
+    // 受限工具集：按身份默认工具过滤（空 = 全部工具），并显式剔除
+    // spawn_subagent 防递归派生
     Identity role = identity_from_string(args.value("role", "general"));
+    std::vector<std::string> allowed = identity_default_tools(role);
+    if (allowed.empty()) allowed = tools_.names();  // 空 = 全部工具
     ToolRegistry sub_tools;
-    for (const auto& name : identity_default_tools(role))
+    for (const auto& name : allowed)
       if (name != "spawn_subagent")
         if (const ToolDefinition* def = tools_.find(name))
           sub_tools.register_tool(*def);
 
     Agent child(llm_, sub_tools, security_, approval_);
     child.set_depth(child_depth);
+    child.set_identity(role);
     child.run(prompt, /*interactive=*/false);
+    // finish 显式交付优先于历史扫描
+    if (child.finished() && !child.final_summary().empty())
+      return {true, child.final_summary()};
     // 取最后一条 assistant 文本作为子代理结果
     for (auto it = child.history().rbegin(); it != child.history().rend(); ++it) {
       if (it->role == "assistant" && !it->tool_calls.empty()) continue;

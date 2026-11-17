@@ -42,8 +42,8 @@ bool Pipeline::run(const std::string& objective, StageRunner runner,
       }
       case PipelineStage::Reviewer: {
         const StageOutput* impl = last_of(PipelineStage::Implementer);
-        prompt = "目标: " + objective + "\n实现产出如下:\n" +
-                 (impl ? impl->output : "") +
+        // 审查只针对实现产出，不重复目标（对齐 Rust：后段不再携带 task_ref）
+        prompt = "实现产出如下:\n" + (impl ? impl->output : "") +
                  "\n请审查正确性/安全/可维护性。通过则明确输出 PASS，否则列出问题。";
         break;
       }
@@ -63,8 +63,7 @@ bool Pipeline::run(const std::string& objective, StageRunner runner,
         if (const StageOutput* t = last_of(PipelineStage::Tester); t && !t->ok)
           issues += "测试报告: " + t->output + "\n";
         const StageOutput* impl = last_of(PipelineStage::Implementer);
-        prompt = "目标: " + objective + "\n实现产出如下:\n" +
-                 (impl ? impl->output : "") + "\n" +
+        prompt = "实现产出如下:\n" + (impl ? impl->output : "") + "\n" +
                  (issues.empty()
                       ? "审查与测试均已通过，请做最终检查与收尾（无未决问题则说明）。"
                       : "未决问题如下，请逐一修复:\n" + issues);
@@ -77,8 +76,7 @@ bool Pipeline::run(const std::string& objective, StageRunner runner,
           summary += std::string("- [") + pipeline_stage_name(o.stage) + "] " +
                      (o.ok ? "通过" : "未通过") + ": " +
                      truncate_utf8(o.output, 200) + "\n";
-        prompt = "目标: " + objective +
-                 "\n各阶段产出摘要如下:\n" + summary +
+        prompt = "各阶段产出摘要如下:\n" + summary +
                  "\n请生成任务完成报告：做了什么、改动清单、遗留风险。";
         break;
       }

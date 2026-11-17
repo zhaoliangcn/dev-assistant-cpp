@@ -20,6 +20,10 @@ public:
   // 返回是否发生了压缩
   bool maybe_compress(std::vector<ChatMessage>& history);
 
+  // 无条件压缩（compress_context 工具显式调用）；无可压缩消息时返回 false
+  bool force_compress(std::vector<ChatMessage>& history);
+
+  size_t threshold() const { return threshold_; }
   void set_threshold(size_t tokens) { threshold_ = tokens; }
   void set_keep_recent(size_t n) { keep_ = n; }
 

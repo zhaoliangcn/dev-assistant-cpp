@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "agent/compressor.hpp"
+#include "agent/identity.hpp"
 #include "llm/client.hpp"
 #include "persist/journal.hpp"
 #include "security/approval.hpp"
@@ -31,6 +32,9 @@ public:
 
   // 子代理深度（父代理为 0，spawn_subagent 传递 depth+1）
   void set_depth(int d) { depth_ = d; }
+
+  // 身份：非 General 时会话提示词追加角色指令与子代理执行规则
+  void set_identity(Identity id) { identity_ = id; }
 
   // 上下文预算（B1）：--max-tokens 透传为压缩阈值；超限自动压缩历史
   void set_context_budget(size_t tokens) { compressor_.set_threshold(tokens); }
@@ -59,6 +63,10 @@ public:
 
   const std::vector<ChatMessage>& history() const { return history_; }
   void clear_history() { history_.clear(); }
+
+  // finish 工具：模型显式结束本轮时的最终结论
+  bool finished() const { return finished_; }
+  const std::string& final_summary() const { return final_summary_; }
   // --resume：外部（App）重建历史后注入
   void set_history(std::vector<ChatMessage> h) { history_ = std::move(h); }
 
@@ -74,6 +82,9 @@ private:
   std::vector<ChatMessage> history_;
   int max_turns_ = 40;
   int depth_ = 0;  // 子代理深度 ≤3
+  Identity identity_ = Identity::General;  // 会话身份（子代理/流水线阶段注入）
+  bool finished_ = false;  // finish 工具已调用
+  std::string final_summary_;
   Compressor compressor_;  // B1：每 step 前检查并压缩超限历史
   Journal* journal_ = nullptr;  // B3：会话事件落盘（非拥有）
 };

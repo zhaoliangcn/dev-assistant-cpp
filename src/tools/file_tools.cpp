@@ -130,6 +130,79 @@ ToolResult read_file_tool(const nlohmann::json& args, ToolContext& ctx) {
   return {true, content};
 }
 
+// batch_read_files：一次读取多个文件，减少往返；单文件失败不影响其他文件
+ToolResult batch_read_files_tool(const nlohmann::json& args, ToolContext& ctx) {
+  if (!args.contains("files") || !args["files"].is_array())
+    return {false, "files 必须是数组"};
+  const auto& files = args["files"];
+  if (files.empty()) return {false, "files 不能为空"};
+  if (files.size() > 20) return {false, "一次最多读取 20 个文件"};
+
+  constexpr size_t kTotalCap = 512 * 1024;  // 单次批量读取总量上限
+  std::ostringstream out;
+  size_t total = 0;
+  int ok_count = 0;
+  for (const auto& item : files) {
+    std::string path;
+    long offset = 0;
+    long limit = 2000;
+    if (item.is_string()) {
+      path = item.get<std::string>();
+    } else if (item.is_object()) {
+      path = arg_str(item, "path");
+      offset = arg_long(item, "offset", 0);
+      limit = arg_long(item, "limit", 2000);
+    }
+    if (path.empty()) {
+      out << "===== (缺少 path) =====\n错误: 条目缺少 path\n";
+      continue;
+    }
+    std::string full = resolve_path(ctx, path);
+    std::string reason;
+    if (!ctx.security->validate_path(full, PathCheck::ReadOnly, reason)) {
+      out << "===== " << path << " =====\n错误: 路径被拒绝: " << reason
+          << "\n";
+      continue;
+    }
+    std::string content;
+    std::string err;
+    if (!read_capped(full, kMaxReadBytes, content, err)) {
+      out << "===== " << path << " =====\n错误: " << err << "\n";
+      continue;
+    }
+    std::string body;
+    if (offset > 0 || limit > 0) {
+      std::vector<std::string> lines;
+      size_t pos = 0;
+      while (pos <= content.size()) {
+        size_t nl = content.find('\n', pos);
+        lines.push_back(content.substr(
+            pos, nl == std::string::npos ? std::string::npos : nl - pos));
+        if (nl == std::string::npos) break;
+        pos = nl + 1;
+      }
+      std::ostringstream sliced;
+      long end = limit > 0 ? std::min(offset + limit, (long)lines.size())
+                           : (long)lines.size();
+      for (long i = offset; i < end; i++)
+        sliced << (i + 1) << "\t" << lines[i] << "\n";
+      body = sliced.str();
+    } else {
+      body = content;
+    }
+    if (total + body.size() > kTotalCap) {
+      out << "===== " << path
+          << " =====\n错误: 超出单次批量读取总量上限(512KB)，后续文件已跳过\n";
+      break;
+    }
+    total += body.size();
+    ok_count++;
+    out << "===== " << path << " =====\n" << body;
+    if (!body.empty() && body.back() != '\n') out << "\n";
+  }
+  return {ok_count > 0, out.str()};
+}
+
 // C1：代码态花括号深度统计——跳过字符串/字符字面量与 // /* */ 注释，
 // 防止字面量或注释中的 { } 干扰函数边界判定。
 // 返回 depth 归零（闭合）时的行下标；未闭合则到文件尾。
@@ -427,6 +500,26 @@ void register_file_tools(ToolRegistry& reg) {
                     {"required", {"path"}}};
     t.path_check = PathCheck::ReadOnly;
     t.handler = read_file_tool;
+    reg.register_tool(std::move(t));
+  }
+  {
+    ToolDefinition t;
+    t.name = "batch_read_files";
+    t.description =
+        "一次读取多个文件，减少往返。files 为路径字符串数组或"
+        "{path, offset, limit} 对象数组；单文件失败不影响其他文件，"
+        "结果按 ===== 路径 ===== 分隔。";
+    t.parameters = {
+        {"type", "object"},
+        {"properties",
+         {{"files",
+           {{"type", "array"},
+            {"description", "文件列表：字符串或 {path, offset, limit}"},
+            {"items", nlohmann::json::object()}}}}},
+        {"required", {"files"}}};
+    // 逐文件路径校验在 handler 内完成（工具级 path_check 只适用于单 path）
+    t.path_check = PathCheck::None;
+    t.handler = batch_read_files_tool;
     reg.register_tool(std::move(t));
   }
   {

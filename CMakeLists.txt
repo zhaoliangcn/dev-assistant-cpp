@@ -30,6 +30,7 @@ set(DA_SOURCES
   src/tools/registry.cpp
   src/tools/file_tools.cpp
   src/tools/system_tools.cpp
+  src/tools/kb.cpp
   src/tools/subagent.cpp
   src/security/policy.cpp
   src/security/approval.cpp
@@ -54,6 +55,7 @@ set(DA_SOURCES
   src/config/toml.cpp
   src/utils/frontmatter.cpp
   src/utils/gitignore.cpp
+  src/utils/sha256.cpp
 )
 
 add_executable(dev-assistant ${DA_SOURCES})
@@ -84,9 +86,11 @@ add_executable(da_tests
   tests/test_tools.cpp
   tests/test_security.cpp
   tests/test_scheduler.cpp
+  tests/test_prompt.cpp
   src/config/toml.cpp
   src/utils/frontmatter.cpp
   src/utils/gitignore.cpp
+  src/utils/sha256.cpp
   src/llm/provider/openai.cpp
   src/llm/provider/anthropic.cpp
   src/llm/provider/ollama.cpp
@@ -96,11 +100,17 @@ add_executable(da_tests
   src/tools/registry.cpp
   src/tools/file_tools.cpp
   src/tools/system_tools.cpp
+  src/tools/kb.cpp
   src/tools/subagent.cpp
   src/security/policy.cpp
   src/security/approval.cpp
   src/scheduler/scheduler.cpp
   src/agent/tool_gate.cpp
+  src/agent/identity.cpp
+  src/agent/pipeline.cpp
+  src/agent/compressor.cpp
+  src/prompt.cpp
+  src/skills/skills.cpp
 )
 target_include_directories(da_tests PRIVATE third_party src)
 add_test(NAME unit COMMAND da_tests)

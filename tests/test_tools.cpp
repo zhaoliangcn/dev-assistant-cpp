@@ -76,8 +76,9 @@ static void test_schema_full_registry() {
     EXPECT(params.is_object());
     EXPECT(params["required"].is_array());
   }
-  // exec_command/list_dir/read_file/read_symbol/write_file/edit_file/glob/grep/spawn_subagent
-  EXPECT_EQ(n, 9);
+  // exec_command/list_dir/read_file/read_symbol/write_file/edit_file/glob/grep/
+  // spawn_subagent/batch_read_files
+  EXPECT_EQ(n, 10);
 }
 
 static void test_edit_file_replace_all() {

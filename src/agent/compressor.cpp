@@ -17,7 +17,10 @@ size_t Compressor::history_tokens(const std::vector<ChatMessage>& history) {
 
 bool Compressor::maybe_compress(std::vector<ChatMessage>& history) {
   if (history_tokens(history) <= threshold_) return false;
+  return force_compress(history);
+}
 
+bool Compressor::force_compress(std::vector<ChatMessage>& history) {
   // 分离 system 消息（保留）与对话消息
   std::vector<ChatMessage> kept;  // system + 最近 N 轮
   std::vector<ChatMessage> rest;  // 被压缩部分
@@ -38,6 +41,7 @@ bool Compressor::maybe_compress(std::vector<ChatMessage>& history) {
 
   for (size_t i = sys_end; i < cut; i++) rest.push_back(history[i]);
   for (size_t i = cut; i < history.size(); i++) kept.push_back(history[i]);
+  if (rest.empty()) return false;  // 无早期消息可压缩
 
   // 生成摘要占位：列出被压缩消息的角色与首行，保上下文线索
   std::string summary = "[早期对话已压缩] 被压缩消息概要:\n";
